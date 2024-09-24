@@ -1,10 +1,13 @@
+#pragma once
 
-#ifndef __AP_HAL_LINUX_GPIO_BBB_H__
-#define __AP_HAL_LINUX_GPIO_BBB_H__
+#include "AP_HAL_Linux.h"
 
-#include <AP_HAL_Linux.h>
+#define CM_PER_BASE          0x44E00000
+#define CM_PER_GPIO1_CLKCTRL 0x2B
+#define CM_PER_GPIO2_CLKCTRL 0x2C
+#define CM_PER_GPIO3_CLKCTRL 0x2D
 
-#define SYSFS_GPIO_DIR "/sys/class/gpio"
+#define CM_PER_BASE_SIZE     0x00003FFF
 
 #define GPIO0_BASE 0x44E07000
 #define GPIO1_BASE 0x4804C000
@@ -22,10 +25,12 @@
 #define LED_BLUE        48
 #define LED_SAFETY      61
 #define SAFETY_SWITCH   116
-#define LOW             0
-#define HIGH            1
 
-#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_PXF || CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ERLE || CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BBBMINI
+#if CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_PXF || \
+    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_ERLEBOARD || \
+    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BBBMINI || \
+    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BLUE || \
+    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_POCKET
 #define LINUX_GPIO_NUM_BANKS 4
 #else
 // disable GPIO
@@ -105,7 +110,9 @@
 #define BBB_P9_41 20
 #define BBB_P9_42 7
 
-class Linux::LinuxGPIO_BBB : public AP_HAL::GPIO {
+namespace Linux {
+
+class GPIO_BBB : public AP_HAL::GPIO {
 private:
     struct GPIO {
         volatile uint32_t *base;
@@ -115,23 +122,18 @@ private:
      } gpio_bank[LINUX_GPIO_NUM_BANKS];
 
 public:
-    LinuxGPIO_BBB();
-    void    init();
-    void    pinMode(uint8_t pin, uint8_t output);
-    int8_t  analogPinToDigitalPin(uint8_t pin);
-    uint8_t read(uint8_t pin);
-    void    write(uint8_t pin, uint8_t value);
-    void    toggle(uint8_t pin);
+    GPIO_BBB();
+    void    init() override;
+    void    pinMode(uint8_t pin, uint8_t output) override;
+    uint8_t read(uint8_t pin) override;
+    void    write(uint8_t pin, uint8_t value) override;
+    void    toggle(uint8_t pin) override;
 
     /* Alternative interface: */
-    AP_HAL::DigitalSource* channel(uint16_t n);
-
-    /* Interrupt interface: */
-    bool    attach_interrupt(uint8_t interrupt_num, AP_HAL::Proc p,
-            uint8_t mode);
+    AP_HAL::DigitalSource* channel(uint16_t n) override;
 
     /* return true if USB cable is connected */
-    bool    usb_connected(void);
+    bool    usb_connected(void) override;
 };
 
-#endif // __AP_HAL_LINUX_GPIO_BBB_H__
+}

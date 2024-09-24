@@ -1,15 +1,12 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
+#pragma once
 
 /// @file	AC_PD.h
-/// @brief	Generic PID algorithm, with EEPROM-backed storage of constants.
+/// @brief	Generic P controller with EEPROM-backed storage of constants.
 
-#ifndef __AC_P_H__
-#define __AC_P_H__
-
-#include <AP_Common.h>
-#include <AP_Param.h>
+#include <AP_Common/AP_Common.h>
+#include <AP_Param/AP_Param.h>
 #include <stdlib.h>
-#include <math.h>
+#include <cmath>
 
 /// @class	AC_P
 /// @brief	Object managing one P controller
@@ -23,12 +20,13 @@ public:
     ///
     /// @param  initial_p       Initial value for the P term.
     ///
-    AC_P(
-        const float &   initial_p = 0.0f)
+    AC_P(const float &initial_p = 0.0f) :
+        default_kp(initial_p)
     {
-		AP_Param::setup_object_defaults(this, var_info);
-        _kp = initial_p;
+        AP_Param::setup_object_defaults(this, var_info);
     }
+
+    CLASS_NO_COPY(AC_P);
 
     /// Iterate the P controller, return the new control value
     ///
@@ -55,17 +53,15 @@ public:
     /// @name	parameter accessors
     //@{
 
-    /// Overload the function call operator to permit relatively easy initialisation
-    void operator() (const float p) { _kp = p; }
-
     // accessors
-    float       kP() const { return _kp.get(); }
-    void        kP(const float v) { _kp.set(v); }
+    AP_Float    &kP() { return _kp; }
+    const AP_Float &kP() const { return _kp; }
+    void        set_kP(const float v) { _kp.set(v); }
 
     static const struct AP_Param::GroupInfo        var_info[];
 
 private:
     AP_Float        _kp;
-};
 
-#endif // __AC_P_H__
+    const float default_kp;
+};

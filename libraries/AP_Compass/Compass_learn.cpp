@@ -1,126 +1,73 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-#include "Compass.h"
+#include <AP_AHRS/AP_AHRS.h>
 
-// don't allow any axis of the offset to go above 2000
-#define COMPASS_OFS_LIMIT 2000
+#include <AP_Compass/AP_Compass.h>
+
+#include "Compass_learn.h"
+#include <GCS_MAVLink/GCS.h>
+#include <AP_Vehicle/AP_Vehicle.h>
+#include <AP_NavEKF/EKFGSF_yaw.h>
+
+#if COMPASS_LEARN_ENABLED
+
+#include <AP_Logger/AP_Logger.h>
+
+extern const AP_HAL::HAL &hal;
+
+// constructor
+CompassLearn::CompassLearn(Compass &_compass) :
+    compass(_compass)
+{
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, "CompassLearn: Initialised");
+}
+
+// accuracy threshold applied for GSF yaw estimate
+#define YAW_ACCURACY_THRESHOLD_DEG 5.0
 
 /*
- *  this offset learning algorithm is inspired by this paper from Bill Premerlani
- *
- *  http://gentlenav.googlecode.com/files/MagnetometerOffsetNullingRevisited.pdf
- *
- *  The base algorithm works well, but is quite sensitive to
- *  noise. After long discussions with Bill, the following changes were
- *  made:
- *
- *   1) we keep a history buffer that effectively divides the mag
- *      vectors into a set of N streams. The algorithm is run on the
- *      streams separately
- *
- *   2) within each stream we only calculate a change when the mag
- *      vector has changed by a significant amount.
- *
- *  This gives us the property that we learn quickly if there is no
- *  noise, but still learn correctly (and slowly) in the face of lots of
- *  noise.
+  update when new compass sample available
  */
-void
-Compass::learn_offsets(void)
+void CompassLearn::update(void)
 {
-    if (_learn == 0) {
-        // auto-calibration is disabled
+    const AP_Vehicle *vehicle = AP::vehicle();
+    if (compass.get_learn_type() != Compass::LEARN_INFLIGHT ||
+        !hal.util->get_soft_armed() ||
+        vehicle->get_time_flying_ms() < 3000) {
+        // only learn when flying and with enough time to be clear of
+        // the ground
         return;
     }
 
-    // this gain is set so we converge on the offsets in about 5
-    // minutes with a 10Hz compass
-    const float gain = 0.01f;
-    const float max_change = 10.0f;
-    const float min_diff = 50.0f;
-
-    if (!_null_init_done) {
-        // first time through
-        _null_init_done = true;
-        for (uint8_t k=0; k<COMPASS_MAX_INSTANCES; k++) {
-            const Vector3f &field = _state[k].field;
-            const Vector3f &ofs = _state[k].offset.get();
-            for (uint8_t i=0; i<_mag_history_size; i++) {
-                // fill the history buffer with the current mag vector,
-                // with the offset removed
-                _state[k].mag_history[i] = Vector3i((field.x+0.5f) - ofs.x, (field.y+0.5f) - ofs.y, (field.z+0.5f) - ofs.z);
-            }
-            _state[k].mag_history_index = 0;
-        }
+    const auto &ahrs = AP::ahrs();
+    const auto *gsf = ahrs.get_yaw_estimator();
+    if (gsf == nullptr) {
+        // no GSF available
+        return;
+    }
+    if (degrees(fabsf(ahrs.get_pitch())) > 50) {
+        // we don't want to be too close to nose up, or yaw gets
+        // problematic. Tailsitters need to wait till they are in
+        // forward flight
         return;
     }
 
-    for (uint8_t k=0; k<COMPASS_MAX_INSTANCES; k++) {
-        const Vector3f &ofs = _state[k].offset.get();
-        const Vector3f &field = _state[k].field;
-        Vector3f b1, diff;
-        float length;
+    AP_Notify::flags.compass_cal_running = true;
 
-        if (ofs.is_nan()) {
-            // offsets are bad possibly due to a past bug - zero them
-            _state[k].offset.set(Vector3f());
-        }
+    ftype yaw_rad, yaw_variance;
+    uint8_t n_clips;
+    if (!gsf->getYawData(yaw_rad, yaw_variance, &n_clips) ||
+        !is_positive(yaw_variance) ||
+        n_clips > 1 ||
+        yaw_variance >= sq(radians(YAW_ACCURACY_THRESHOLD_DEG))) {
+        // not converged
+        return;
+    }
 
-        // get a past element
-        b1 = Vector3f(_state[k].mag_history[_state[k].mag_history_index].x,
-                      _state[k].mag_history[_state[k].mag_history_index].y,
-                      _state[k].mag_history[_state[k].mag_history_index].z);
-
-        // the history buffer doesn't have the offsets
-        b1 += ofs;
-
-        // get the current vector
-        const Vector3f &b2 = field;
-
-        // calculate the delta for this sample
-        diff = b2 - b1;
-        length = diff.length();
-        if (length < min_diff) {
-            // the mag vector hasn't changed enough - we don't get
-            // enough information from this vector to use it.
-            // Note that we don't put the current vector into the mag
-            // history here. We want to wait for a larger rotation to
-            // build up before calculating an offset change, as accuracy
-            // of the offset change is highly dependent on the size of the
-            // rotation.
-            _state[k].mag_history_index = (_state[k].mag_history_index + 1) % _mag_history_size;
-            continue;
-        }
-
-        // put the vector in the history
-        _state[k].mag_history[_state[k].mag_history_index] = Vector3i((field.x+0.5f) - ofs.x, 
-                                                                      (field.y+0.5f) - ofs.y, 
-                                                                      (field.z+0.5f) - ofs.z);
-        _state[k].mag_history_index = (_state[k].mag_history_index + 1) % _mag_history_size;
-
-        // equation 6 of Bills paper
-        diff = diff * (gain * (b2.length() - b1.length()) / length);
-
-        // limit the change from any one reading. This is to prevent
-        // single crazy readings from throwing off the offsets for a long
-        // time
-        length = diff.length();
-        if (length > max_change) {
-            diff *= max_change / length;
-        }
-
-        Vector3f new_offsets = _state[k].offset.get() - diff;
-
-        if (new_offsets.is_nan()) {
-            // don't apply bad offsets
-            continue;
-        }
-
-        // constrain offsets
-        new_offsets.x = constrain_float(new_offsets.x, -COMPASS_OFS_LIMIT, COMPASS_OFS_LIMIT);
-        new_offsets.y = constrain_float(new_offsets.y, -COMPASS_OFS_LIMIT, COMPASS_OFS_LIMIT);
-        new_offsets.z = constrain_float(new_offsets.z, -COMPASS_OFS_LIMIT, COMPASS_OFS_LIMIT);
-            
-        // set the new offsets
-        _state[k].offset.set(new_offsets);
+    const bool result = compass.mag_cal_fixed_yaw(degrees(yaw_rad), (1U<<HAL_COMPASS_MAX_SENSORS)-1, 0, 0, true);
+    if (result) {
+        AP_Notify::flags.compass_cal_running = false;
+        compass.set_learn_type(Compass::LEARN_NONE, true);
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "CompassLearn: Finished");
     }
 }
+
+#endif // COMPASS_LEARN_ENABLED

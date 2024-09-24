@@ -3,32 +3,28 @@
  *       DIYDrones.com
  */
 
-#include <AP_Common.h>
-#include <AP_Progmem.h>
-#include <AP_Math.h>            // ArduPilot Mega Vector/Matrix math Library
-#include <AP_Param.h>
-#include <AP_HAL.h>
-#include <AP_HAL_AVR.h>
-#include <AP_HAL_Linux.h>
-#include <AP_HAL_PX4.h>
-#include <AP_HAL_Empty.h>
-#include <AP_Notify.h>          // Notify library
-#include <AP_BoardLED.h>        // Board LED library
-#include <GCS_MAVLink.h>
-#include <StorageManager.h>
-#include <AP_RangeFinder.h>
+#include <AP_HAL/AP_HAL.h>
+#include <AP_Notify/AP_Notify.h>          // Notify library
+#include <AP_Notify/AP_BoardLED.h>        // Board LED library
 
-const AP_HAL::HAL& hal = AP_HAL_BOARD_DRIVER;
+void setup();
+void loop();
 
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();
+
+#if AP_NOTIFY_GPIO_LED_3_ENABLED
 // create board led object
 AP_BoardLED board_led;
+#endif
 
 void setup()
 {
-    hal.console->println("AP_Notify library test");
+    hal.console->printf("AP_Notify library test\n");
 
+#if AP_NOTIFY_GPIO_LED_3_ENABLED
     // initialise the board leds
     board_led.init();
+#endif
 
     // turn on initialising notification
     AP_Notify::flags.initialising = true;

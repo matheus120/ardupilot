@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,51 +13,47 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 /*
-  gimbal simulator class for MAVLink gimbal
+  gimbal simulator class for gimbal
 */
 
-#include "SIM_Aircraft.h"
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 #include "SIM_Gimbal.h"
+
+#if AP_SIM_GIMBAL_ENABLED
+
 #include <stdio.h>
+
+#include "SIM_Aircraft.h"
 
 extern const AP_HAL::HAL& hal;
 
-Gimbal::Gimbal(const struct sitl_fdm &_fdm) :
-    fdm(_fdm),
-    target_address("127.0.0.1"),
-    target_port(5762),
-    lower_joint_limits(radians(-40), radians(-135), radians(-7.5)),
-    upper_joint_limits(radians(40),  radians(45),   radians(7.5)),
-    travelLimitGain(20),
-    reporting_period_ms(10),
-    seen_heartbeat(false),
-    seen_gimbal_control(false),
-    mav_socket(false)
-{
-    memset(&mavlink, 0, sizeof(mavlink));
-    dcm.from_euler(radians(fdm.rollDeg), radians(fdm.pitchDeg), radians(fdm.yawDeg));
-}
+#define GIMBAL_DEBUG 0
 
+#if GIMBAL_DEBUG
+#define debug(fmt, args...)  do { printf("GIMBAL: " fmt, ##args); } while(0)
+#else
+#define debug(fmt, args...)  do { } while(0)
+#endif
+
+namespace SITL {
 
 /*
   update the gimbal state
 */
-void Gimbal::update(void)
+void Gimbal::update(const class Aircraft &aircraft)
 {
     // calculate delta time in seconds
-    uint32_t now_us = hal.scheduler->micros();
+    uint32_t now_us = AP_HAL::micros();
 
     float delta_t = (now_us - last_update_us) * 1.0e-6f;
     last_update_us = now_us;
 
-    Matrix3f vehicle_dcm;
-    vehicle_dcm.from_euler(radians(fdm.rollDeg), radians(fdm.pitchDeg), radians(fdm.yawDeg));
+    const Matrix3f &vehicle_dcm = aircraft.get_dcm();
+    if (!init_done) {
+        dcm = vehicle_dcm;
+    }
 
-    Vector3f vehicle_gyro = Vector3f(radians(fdm.rollRate), 
-                                     radians(fdm.pitchRate), 
-                                     radians(fdm.yawRate));
-    Vector3f vehicle_accel_body = Vector3f(fdm.xAccel, fdm.yAccel, fdm.zAccel);
+    const Vector3f &vehicle_gyro = AP::ins().get_gyro();
+    const Vector3f &vehicle_accel_body = AP::ins().get_accel();
 
     // take a copy of the demanded rates to bypass the limiter function for testing
     Vector3f demRateRaw = demanded_angular_rate;
@@ -77,7 +72,7 @@ void Gimbal::update(void)
     Matrix3f rotmat_copter_gimbal = dcm.transposed() * vehicle_dcm;
 
     joint_angles = rotmat_copter_gimbal.transposed().to_euler312();
-        
+
     /* 4)  For each of the three joints, calculate upper and lower rate limits
        from the corresponding angle limits and current joint angles
 
@@ -143,7 +138,7 @@ void Gimbal::update(void)
     //    in an inertial frame of reference
     // demandedGimbalRatesInertial(X,Y,Z)  = relativeGimbalRate(X,Y,Z) + copterAngRate_G
     // Vector3f demandedGimbalRatesInertial = relativeGimbalRate + copterAngRate_G;
-            
+
     // for the moment we will set gyros equal to demanded_angular_rate
     gimbal_angular_rate = demRateRaw; // demandedGimbalRatesInertial + true_gyro_bias - supplied_gyro_bias
 
@@ -169,126 +164,21 @@ void Gimbal::update(void)
 
     // integrate velocity
     delta_velocity += accel * delta_t;
-
-    // see if we should do a report
-    send_report();
 }
 
-/*
-  send a report to the vehicle control code over MAVLink
-*/
-void Gimbal::send_report(void)
+void Gimbal::get_deltas(Vector3f &_delta_angle, Vector3f &_delta_velocity, uint32_t &_delta_time_us)
 {
-    if (!mavlink.connected && mav_socket.connect(target_address, target_port)) {
-        ::printf("Gimbal connected to %s:%u\n", target_address, (unsigned)target_port);
-        mavlink.connected = true;
-    }
-    if (!mavlink.connected) {
-        return;
-    }
+    const uint32_t now_us = AP_HAL::micros();
 
-    // check for incoming MAVLink messages
-    uint8_t buf[100];
-    ssize_t ret;
+    _delta_angle = delta_angle;
+    _delta_velocity = delta_velocity;
+    _delta_time_us = now_us - delta_start_us;
 
-    while ((ret=mav_socket.recv(buf, sizeof(buf), 0)) > 0) {
-        for (uint8_t i=0; i<ret; i++) {
-            mavlink_message_t msg;
-            mavlink_status_t status;
-            if (mavlink_frame_char_buffer(&mavlink.rxmsg, &mavlink.status,
-                                          buf[i], 
-                                          &msg, &status) == MAVLINK_FRAMING_OK) {
-                switch (msg.msgid) {
-                case MAVLINK_MSG_ID_HEARTBEAT: {
-                    if (!seen_heartbeat) {
-                        seen_heartbeat = true;
-                        vehicle_component_id = msg.compid;
-                        vehicle_system_id = msg.sysid;
-                        ::printf("Gimbal using srcSystem %u\n", (unsigned)vehicle_system_id);
-                    }
-                    break;
-                }
-                case MAVLINK_MSG_ID_GIMBAL_CONTROL: {
-                    mavlink_gimbal_control_t pkt;
-                    mavlink_msg_gimbal_control_decode(&msg, &pkt);
-                    demanded_angular_rate = Vector3f(pkt.demanded_rate_x,
-                                                     pkt.demanded_rate_y,
-                                                     pkt.demanded_rate_z);
-                    // no longer supply a bias
-                    supplied_gyro_bias.zero();
-                    seen_gimbal_control = true;
-                    break;
-                }
-                }
-            }
-        }
-    }
-
-    if (!seen_heartbeat) {
-        return;
-    }
-    uint32_t now = hal.scheduler->millis();
-    mavlink_message_t msg;
-    uint16_t len;
-
-    if (now - last_heartbeat_ms >= 1000) {
-        mavlink_heartbeat_t heartbeat;
-        heartbeat.type = MAV_TYPE_GIMBAL;
-        heartbeat.autopilot = MAV_AUTOPILOT_ARDUPILOTMEGA;
-        heartbeat.base_mode = 0;
-        heartbeat.system_status = 0;
-        heartbeat.mavlink_version = 0;
-        heartbeat.custom_mode = 0;
-
-        /*
-          save and restore sequence number for chan0, as it is used by
-          generated encode functions
-         */
-        mavlink_status_t *chan0_status = mavlink_get_channel_status(MAVLINK_COMM_0);
-        uint8_t saved_seq = chan0_status->current_tx_seq;
-        chan0_status->current_tx_seq = mavlink.seq;
-        len = mavlink_msg_heartbeat_encode(vehicle_system_id, 
-                                           vehicle_component_id, 
-                                           &msg, &heartbeat);
-        chan0_status->current_tx_seq = saved_seq;
-
-        mav_socket.send(&msg.magic, len);
-        last_heartbeat_ms = now;
-    }
-
-    /*
-      send a GIMBAL_REPORT message
-     */
-    uint32_t now_us = hal.scheduler->micros();
-    if (now_us - last_report_us > reporting_period_ms*1000UL) {
-        mavlink_gimbal_report_t gimbal_report;
-        float delta_time = (now_us - last_report_us) * 1.0e-6f;
-        last_report_us = now_us;
-        gimbal_report.target_system = vehicle_system_id;
-        gimbal_report.target_component = vehicle_component_id;
-        gimbal_report.delta_time = delta_time;
-        gimbal_report.delta_angle_x = delta_angle.x;
-        gimbal_report.delta_angle_y = delta_angle.y;
-        gimbal_report.delta_angle_z = delta_angle.z;
-        gimbal_report.delta_velocity_x = delta_velocity.x;
-        gimbal_report.delta_velocity_y = delta_velocity.y;
-        gimbal_report.delta_velocity_z = delta_velocity.z;
-        gimbal_report.joint_roll = joint_angles.x;
-        gimbal_report.joint_el = joint_angles.y;
-        gimbal_report.joint_az = joint_angles.z;
-
-        mavlink_status_t *chan0_status = mavlink_get_channel_status(MAVLINK_COMM_0);
-        uint8_t saved_seq = chan0_status->current_tx_seq;
-        chan0_status->current_tx_seq = mavlink.seq;
-        len = mavlink_msg_gimbal_report_encode(vehicle_system_id, 
-                                               vehicle_component_id, 
-                                               &msg, &gimbal_report);
-        chan0_status->current_tx_seq = saved_seq;
-
-        mav_socket.send(&msg.magic, len);
-        
-        delta_velocity.zero();
-        delta_angle.zero();
-    }
+    delta_angle.zero();
+    delta_velocity.zero();
+    delta_start_us = now_us;
 }
-#endif // CONFIG_HAL_BOARD
+
+} // namespace SITL
+
+#endif  // AP_SIM_GIMBAL_ENABLED

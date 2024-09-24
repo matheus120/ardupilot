@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,21 +16,23 @@
   simulator connector for ardupilot version of last_letter
 */
 
-#include <AP_HAL.h>
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 #include "SIM_last_letter.h"
-#include <stdio.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+
+#if HAL_SIM_LAST_LETTER_ENABLED
+
 #include <fcntl.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include <AP_HAL/AP_HAL.h>
 
 extern const AP_HAL::HAL& hal;
 
-/*
-  constructor
- */
-last_letter::last_letter(const char *home_str, const char *frame_str) :
-    Aircraft(home_str, frame_str),
+namespace SITL {
+
+last_letter::last_letter(const char *_frame_str) :
+    Aircraft(_frame_str),
     last_timestamp_us(0),
     sock(true)
 {
@@ -53,23 +54,22 @@ void last_letter::start_last_letter(void)
 {
     pid_t child_pid = fork();
     if (child_pid == 0) {
-        close(0);
-        open("/dev/null", O_RDONLY);
-        // in child
-        for (uint8_t i=3; i<100; i++) {
-            close(i);
-        }
-
-        int ret = execlp("roslaunch", 
-                         "roslaunch", 
-                         "last_letter",
-                         "launcher.launch",
-                         "ArduPlane:=true",
-                         NULL);
-        if (ret != 0) {
-            perror("roslaunch");
-        }
-        exit(1);
+      // in child
+      close(0);
+      open("/dev/null", O_RDONLY|O_CLOEXEC);
+      for (uint8_t i=3; i<100; i++) {
+          close(i);
+      }
+      int ret = execlp("roslaunch",
+                       "roslaunch",
+                       "last_letter",
+                       "gazebo.launch",
+                       "ArduPlane:=true",
+                       nullptr);
+      if (ret != 0) {
+          perror("roslaunch");
+      }
+      exit(1);
     }
 }
 
@@ -108,7 +108,9 @@ void last_letter::recv_fdm(const struct sitl_input &input)
     dcm.from_euler(pkt.roll, pkt.pitch, pkt.yaw);
 
     airspeed = pkt.airspeed;
+    airspeed_pitot = pkt.airspeed;
 
+    
     // auto-adjust to last_letter frame rate
     uint64_t deltat_us = pkt.timestamp_us - last_timestamp_us;
     time_now_us += deltat_us;
@@ -127,5 +129,13 @@ void last_letter::update(const struct sitl_input &input)
     send_servos(input);
     recv_fdm(input);
     sync_frame_time();
+
+    update_position();
+    time_advance();
+    // update magnetic field
+    update_mag_field_bf();
 }
-#endif // CONFIG_HAL_BOARD
+
+} // namespace SITL
+
+#endif  // HAL_SIM_LAST_LETTER_ENABLED

@@ -1,5 +1,5 @@
 /*
- *  AP_Notify Library. 
+ *  AP_Notify Library.
  * based upon a prototype library by David "Buzz" Bussenschutt.
  */
 
@@ -18,19 +18,22 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __VRBRAIN_LED_H__
-#define __VRBRAIN_LED_H__
+#pragma once
+
+#include "AP_Notify_config.h"
+
+#if AP_NOTIFY_VRBOARD_LED_ENABLED
 
 #include "RGBLed.h"
 #include "AP_BoardLED.h"
 
-
 class VRBoard_LED: public RGBLed {
 public:
 	VRBoard_LED();
+  bool init(void) override;
 
-    bool hw_init(void);
-    bool hw_set_rgb(uint8_t r, uint8_t g, uint8_t b);
+protected:
+    bool hw_set_rgb(uint8_t r, uint8_t g, uint8_t b) override;
 };
 
-#endif
+#endif  // AP_NOTIFY_VRBOARD_LED_ENABLED

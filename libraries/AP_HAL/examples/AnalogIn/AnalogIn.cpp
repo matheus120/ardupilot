@@ -1,38 +1,54 @@
+/*
+   This program is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation, either version 3 of the License, or
+   (at your option) any later version.
 
-#include <AP_Common.h>
-#include <AP_Math.h>
-#include <AP_Param.h>
-#include <AP_Progmem.h>
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
 
-#include <AP_HAL.h>
-#include <AP_HAL_AVR.h>
-#include <AP_HAL_SITL.h>
-#include <AP_HAL_PX4.h>
-#include <AP_HAL_Empty.h>
-#include <StorageManager.h>
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+/*
+    Analogin.cpp : We loop through the 16 pins and output the analog voltage of the pins
+*/
+#include <AP_HAL/AP_HAL.h>
 
-const AP_HAL::HAL& hal = AP_HAL_BOARD_DRIVER;
+void setup();    //declaration of the setup() function
+void loop();     //declaration of the loop() function
 
-AP_HAL::AnalogSource* ch;
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();    //create a reference to AP_HAL::HAL object to get access to hardware specific functions. For more info see <https://ardupilot.org/dev/docs/learning-ardupilot-the-example-sketches.html/>  
 
-void setup (void) {
-    hal.console->printf_P(PSTR("Starting AP_HAL::AnalogIn test\r\n"));
-    ch = hal.analogin->channel(0);
+AP_HAL::AnalogSource* chan;    //declare a pointer to AnalogSource object. AnalogSource class can be found in : AP_HAL->AnalogIn.h
+
+// the setup function runs once when the board powers up
+void setup(void) {
+    hal.console->printf("Starting AP_HAL::AnalogIn test\r\n");    //print a starting message
+    chan = hal.analogin->channel(0);    //initialization of chan variable. AnalogIn class can be found in : AP_HAL->AnalogIn.h
 }
 
-static int8_t pin;
+static int8_t pin;    //8 bit integer to hold the pin number.Pin number range is [0,15]
 
-void loop (void) 
-{
-    float v  = ch->voltage_average(); 
+//the loop function runs over and over again forever
+void loop(void) {
+    //get the average voltage reading
+    float v  = chan->voltage_average();    //note:the voltage value is divided into 1024 segments    
+    //start a new line after going through the 16 pins
     if (pin == 0) {
-	    hal.console->println();
+        hal.console->printf("\n");
     }
-    hal.console->printf_P(PSTR("[%u %.3f] "),
-			  (unsigned)pin, v);
+    //print the voltage value(3 decimal places) alongside the pin number 
+    hal.console->printf("[%u %.3f] ",
+              (unsigned)pin, (double)v);
+    //increment the pin number
     pin = (pin+1) % 16;
-    ch->set_pin(pin);
+    //set pin corresponding to the new pin value
+    IGNORE_RETURN(chan->set_pin(pin));
+    //give a delay of 100ms
     hal.scheduler->delay(100);
 }
 
-AP_HAL_MAIN();
+AP_HAL_MAIN(); //HAL Macro that declares the main function. For more info see <https://ardupilot.org/dev/docs/learning-ardupilot-the-example-sketches.html/>

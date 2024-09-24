@@ -1,177 +1,78 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 #include "Copter.h"
-
-void Copter::init_barometer(bool full_calibration)
-{
-    gcs_send_text_P(SEVERITY_LOW, PSTR("Calibrating barometer"));
-    if (full_calibration) {
-        barometer.calibrate();
-    }else{
-        barometer.update_calibration();
-    }
-    gcs_send_text_P(SEVERITY_LOW, PSTR("barometer calibration complete"));
-}
 
 // return barometric altitude in centimeters
 void Copter::read_barometer(void)
 {
     barometer.update();
-    if (should_log(MASK_LOG_IMU)) {
-        Log_Write_Baro();
-    }
+
     baro_alt = barometer.get_altitude() * 100.0f;
-    baro_climbrate = barometer.get_climb_rate() * 100.0f;
-
-    motors.set_air_density_ratio(barometer.get_air_density_ratio());
 }
 
-#if CONFIG_SONAR == ENABLED
-void Copter::init_sonar(void)
+#if AP_RANGEFINDER_ENABLED
+void Copter::init_rangefinder(void)
 {
-   sonar.init();
+   rangefinder.set_log_rfnd_bit(MASK_LOG_CTUN);
+   rangefinder.init(ROTATION_PITCH_270);
+   rangefinder_state.alt_cm_filt.set_cutoff_frequency(g2.rangefinder_filt);
+   rangefinder_state.enabled = rangefinder.has_orientation(ROTATION_PITCH_270);
+
+   // upward facing range finder
+   rangefinder_up_state.alt_cm_filt.set_cutoff_frequency(g2.rangefinder_filt);
+   rangefinder_up_state.enabled = rangefinder.has_orientation(ROTATION_PITCH_90);
 }
+
+// return rangefinder altitude in centimeters
+void Copter::read_rangefinder(void)
+{
+    rangefinder.update();
+
+    rangefinder_state.update();
+    rangefinder_up_state.update();
+
+#if HAL_PROXIMITY_ENABLED
+    if (rangefinder_state.enabled_and_healthy() || rangefinder_state.data_stale()) {
+        g2.proximity.set_rangefinder_alt(rangefinder_state.enabled, rangefinder_state.alt_healthy, rangefinder_state.alt_cm_filt.get());
+    }
 #endif
+}
+#endif  // AP_RANGEFINDER_ENABLED
 
-// return sonar altitude in centimeters
-int16_t Copter::read_sonar(void)
+// return true if rangefinder_alt can be used
+bool Copter::rangefinder_alt_ok() const
 {
-#if CONFIG_SONAR == ENABLED
-    sonar.update();
+    return rangefinder_state.enabled_and_healthy();
+}
 
-    // exit immediately if sonar is disabled
-    if (!sonar_enabled || (sonar.status() != RangeFinder::RangeFinder_Good)) {
-        sonar_alt_health = 0;
-        return 0;
+// return true if rangefinder_alt can be used
+bool Copter::rangefinder_up_ok() const
+{
+    return rangefinder_up_state.enabled_and_healthy();
+}
+
+// update rangefinder based terrain offset
+// terrain offset is the terrain's height above the EKF origin
+void Copter::update_rangefinder_terrain_offset()
+{
+    float terrain_offset_cm = rangefinder_state.inertial_alt_cm - rangefinder_state.alt_cm_glitch_protected;
+    rangefinder_state.terrain_offset_cm += (terrain_offset_cm - rangefinder_state.terrain_offset_cm) * (copter.G_Dt / MAX(copter.g2.surftrak_tc, copter.G_Dt));
+
+    terrain_offset_cm = rangefinder_up_state.inertial_alt_cm + rangefinder_up_state.alt_cm_glitch_protected;
+    rangefinder_up_state.terrain_offset_cm += (terrain_offset_cm - rangefinder_up_state.terrain_offset_cm) * (copter.G_Dt / MAX(copter.g2.surftrak_tc, copter.G_Dt));
+
+    if (rangefinder_state.alt_healthy || rangefinder_state.data_stale()) {
+        wp_nav->set_rangefinder_terrain_offset(rangefinder_state.enabled, rangefinder_state.alt_healthy, rangefinder_state.terrain_offset_cm);
+#if MODE_CIRCLE_ENABLED
+        circle_nav->set_rangefinder_terrain_offset(rangefinder_state.enabled && wp_nav->rangefinder_used(), rangefinder_state.alt_healthy, rangefinder_state.terrain_offset_cm);
+#endif
     }
+}
 
-    int16_t temp_alt = sonar.distance_cm();
-
-    if (temp_alt >= sonar.min_distance_cm() && 
-        temp_alt <= sonar.max_distance_cm() * SONAR_RELIABLE_DISTANCE_PCT) {
-        if ( sonar_alt_health < SONAR_ALT_HEALTH_MAX ) {
-            sonar_alt_health++;
-        }
-    }else{
-        sonar_alt_health = 0;
-    }
-
- #if SONAR_TILT_CORRECTION == 1
-    // correct alt for angle of the sonar
-    float temp = ahrs.cos_pitch() * ahrs.cos_roll();
-    temp = max(temp, 0.707f);
-    temp_alt = (float)temp_alt * temp;
- #endif
-
-    return temp_alt;
+// helper function to get inertially interpolated rangefinder height.
+bool Copter::get_rangefinder_height_interpolated_cm(int32_t& ret) const
+{
+#if AP_RANGEFINDER_ENABLED
+    return rangefinder_state.get_rangefinder_height_interpolated_cm(ret);
 #else
-    return 0;
+    return false;
 #endif
 }
-
-// initialise compass
-void Copter::init_compass()
-{
-    if (!compass.init() || !compass.read()) {
-        // make sure we don't pass a broken compass to DCM
-        cliSerial->println_P(PSTR("COMPASS INIT ERROR"));
-        Log_Write_Error(ERROR_SUBSYSTEM_COMPASS,ERROR_CODE_FAILED_TO_INITIALISE);
-        return;
-    }
-    ahrs.set_compass(&compass);
-}
-
-// initialise optical flow sensor
-void Copter::init_optflow()
-{
-#if OPTFLOW == ENABLED
-    // exit immediately if not enabled
-    if (!optflow.enabled()) {
-        return;
-    }
-
-    // initialise optical flow sensor
-    optflow.init();
-#endif      // OPTFLOW == ENABLED
-}
-
-// called at 200hz
-#if OPTFLOW == ENABLED
-void Copter::update_optical_flow(void)
-{
-    static uint32_t last_of_update = 0;
-
-    // exit immediately if not enabled
-    if (!optflow.enabled()) {
-        return;
-    }
-
-    // read from sensor
-    optflow.update();
-
-    // write to log and send to EKF if new data has arrived
-    if (optflow.last_update() != last_of_update) {
-        last_of_update = optflow.last_update();
-        uint8_t flowQuality = optflow.quality();
-        Vector2f flowRate = optflow.flowRate();
-        Vector2f bodyRate = optflow.bodyRate();
-        ahrs.writeOptFlowMeas(flowQuality, flowRate, bodyRate, last_of_update);
-        if (g.log_bitmask & MASK_LOG_OPTFLOW) {
-            Log_Write_Optflow();
-        }
-    }
-}
-#endif  // OPTFLOW == ENABLED
-
-// read_battery - check battery voltage and current and invoke failsafe if necessary
-// called at 10hz
-void Copter::read_battery(void)
-{
-    battery.read();
-
-    // update compass with current value
-    if (battery.has_current()) {
-        compass.set_current(battery.current_amps());
-    }
-
-    // update motors with voltage and current
-    if (battery.get_type() != AP_BattMonitor::BattMonitor_TYPE_NONE) {
-        motors.set_voltage(battery.voltage());
-    }
-    if (battery.has_current()) {
-        motors.set_current(battery.current_amps());
-    }
-
-    // check for low voltage or current if the low voltage check hasn't already been triggered
-    // we only check when we're not powered by USB to avoid false alarms during bench tests
-    if (!ap.usb_connected && !failsafe.battery && battery.exhausted(g.fs_batt_voltage, g.fs_batt_mah)) {
-        failsafe_battery_event();
-    }
-
-    // log battery info to the dataflash
-    if (should_log(MASK_LOG_CURRENT)) {
-        Log_Write_Current();
-    }
-}
-
-// read the receiver RSSI as an 8 bit number for MAVLink
-// RC_CHANNELS_SCALED message
-void Copter::read_receiver_rssi(void)
-{
-    // avoid divide by zero
-    if (g.rssi_range <= 0) {
-        receiver_rssi = 0;
-    }else{
-        rssi_analog_source->set_pin(g.rssi_pin);
-        float ret = rssi_analog_source->voltage_average() * 255 / g.rssi_range;
-        receiver_rssi = constrain_int16(ret, 0, 255);
-    }
-}
-
-#if EPM_ENABLED == ENABLED
-// epm update - moves epm pwm output back to neutral after grab or release is completed
-void Copter::epm_update()
-{
-    epm.update();
-}
-#endif

@@ -1,317 +1,409 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
+#pragma once
 
-#ifndef __AP_MOTORS_CLASS_H__
-#define __AP_MOTORS_CLASS_H__
+#include <AP_Common/AP_Common.h>
+#include <AP_Math/AP_Math.h>
+#include <Filter/Filter.h>         // filter library
+#include <Filter/DerivativeFilter.h>
+#include <GCS_MAVLink/GCS_MAVLink.h>
+#include <AP_Logger/AP_Logger_config.h>
 
-#include <AP_Common.h>
-#include <AP_Progmem.h>
-#include <AP_Math.h>        // ArduPilot Mega Vector/Matrix math Library
-#include <AP_Notify.h>      // Notify library
-#include <RC_Channel.h>     // RC Channel Library
-#include <Filter.h>         // filter library
+// offsets for motors in motor_out and _motor_filtered arrays
+#define AP_MOTORS_MOT_1 0U
+#define AP_MOTORS_MOT_2 1U
+#define AP_MOTORS_MOT_3 2U
+#define AP_MOTORS_MOT_4 3U
+#define AP_MOTORS_MOT_5 4U
+#define AP_MOTORS_MOT_6 5U
+#define AP_MOTORS_MOT_7 6U
+#define AP_MOTORS_MOT_8 7U
+#define AP_MOTORS_MOT_9 8U
+#define AP_MOTORS_MOT_10 9U
+#define AP_MOTORS_MOT_11 10U
+#define AP_MOTORS_MOT_12 11U
 
-// offsets for motors in motor_out, _motor_filtered and _motor_to_channel_map arrays
-#define AP_MOTORS_MOT_1 0
-#define AP_MOTORS_MOT_2 1
-#define AP_MOTORS_MOT_3 2
-#define AP_MOTORS_MOT_4 3
-#define AP_MOTORS_MOT_5 4
-#define AP_MOTORS_MOT_6 5
-#define AP_MOTORS_MOT_7 6
-#define AP_MOTORS_MOT_8 7
+#define AP_MOTORS_MAX_NUM_MOTORS 12
 
-#define APM1_MOTOR_TO_CHANNEL_MAP CH_1,CH_2,CH_3,CH_4,CH_7,CH_8,CH_10,CH_11
-#define APM2_MOTOR_TO_CHANNEL_MAP CH_1,CH_2,CH_3,CH_4,CH_5,CH_6,CH_7,CH_8
+#ifndef AP_MOTORS_FRAME_DEFAULT_ENABLED
+#define AP_MOTORS_FRAME_DEFAULT_ENABLED 1
+#endif
 
-#define AP_MOTORS_MAX_NUM_MOTORS 8
-
-#define AP_MOTORS_DEFAULT_MIN_THROTTLE  130
-#define AP_MOTORS_DEFAULT_MID_THROTTLE  500
-#define AP_MOTORS_DEFAULT_MAX_THROTTLE  1000
-
-// APM board definitions
-#define AP_MOTORS_APM1  1
-#define AP_MOTORS_APM2  2
-
-// frame definitions
-#define AP_MOTORS_PLUS_FRAME        0
-#define AP_MOTORS_X_FRAME           1
-#define AP_MOTORS_V_FRAME           2
-#define AP_MOTORS_H_FRAME           3   // same as X frame but motors spin in opposite direction
-#define AP_MOTORS_VTAIL_FRAME       4   // Lynxmotion Hunter VTail 400/500
-#define AP_MOTORS_ATAIL_FRAME       5   // A-Shaped VTail Quads
-#define AP_MOTORS_NEW_PLUS_FRAME    10  // NEW frames are same as original 4 but with motor orders changed to be clockwise from the front
-#define AP_MOTORS_NEW_X_FRAME       11
-#define AP_MOTORS_NEW_V_FRAME       12
-#define AP_MOTORS_NEW_H_FRAME       13   // same as X frame but motors spin in opposite direction
+#ifndef AP_MOTORS_FRAME_QUAD_ENABLED
+#define AP_MOTORS_FRAME_QUAD_ENABLED AP_MOTORS_FRAME_DEFAULT_ENABLED
+#endif
+#ifndef AP_MOTORS_FRAME_HEXA_ENABLED
+#define AP_MOTORS_FRAME_HEXA_ENABLED AP_MOTORS_FRAME_DEFAULT_ENABLED
+#endif
+#ifndef AP_MOTORS_FRAME_OCTA_ENABLED
+#define AP_MOTORS_FRAME_OCTA_ENABLED AP_MOTORS_FRAME_DEFAULT_ENABLED
+#endif
+#ifndef AP_MOTORS_FRAME_DECA_ENABLED
+#define AP_MOTORS_FRAME_DECA_ENABLED AP_MOTORS_FRAME_DEFAULT_ENABLED
+#endif
+#ifndef AP_MOTORS_FRAME_DODECAHEXA_ENABLED
+#define AP_MOTORS_FRAME_DODECAHEXA_ENABLED AP_MOTORS_FRAME_DEFAULT_ENABLED
+#endif
+#ifndef AP_MOTORS_FRAME_Y6_ENABLED
+#define AP_MOTORS_FRAME_Y6_ENABLED AP_MOTORS_FRAME_DEFAULT_ENABLED
+#endif
+#ifndef AP_MOTORS_FRAME_OCTAQUAD_ENABLED
+#define AP_MOTORS_FRAME_OCTAQUAD_ENABLED AP_MOTORS_FRAME_DEFAULT_ENABLED
+#endif
 
 // motor update rate
 #define AP_MOTORS_SPEED_DEFAULT     490 // default output rate to the motors
 
-#define THROTTLE_CURVE_ENABLED      1   // throttle curve disabled by default
-#define THROTTLE_CURVE_MID_THRUST   52  // throttle which produces 1/2 the maximum thrust.  expressed as a percentage of the full throttle range (i.e 0 ~ 100)
-#define THROTTLE_CURVE_MAX_THRUST   93  // throttle which produces the maximum thrust.  expressed as a percentage of the full throttle range (i.e 0 ~ 100)
-
-#define AP_MOTORS_SPIN_WHEN_ARMED   70  // spin motors at this PWM value when armed
-
-#define AP_MOTORS_YAW_HEADROOM_DEFAULT  200
-
-#define AP_MOTORS_THR_LOW_CMP_DEFAULT   0.5f // ratio controlling the max throttle output during competing requests of low throttle from the pilot (or autopilot) and higher throttle for attitude control.  Higher favours Attitude over pilot input
-#define AP_MOTORS_THST_EXPO_DEFAULT     0.5f // set to 0 for linear and 1 for second order approximation
-#define AP_MOTORS_THST_MAX_DEFAULT      0.95f   // throttle which produces the maximum thrust.  (i.e. 0 ~ 1 ) of the full throttle range
-#define AP_MOTORS_THST_BAT_MAX_DEFAULT  0.0f
-#define AP_MOTORS_THST_BAT_MIN_DEFAULT  0.0f
-#define AP_MOTORS_CURR_MAX_DEFAULT      0.0f    // current limiting max default
-#define AP_MOTORS_BATT_VOLT_FILT_HZ     0.5f    // battery voltage filtered at 0.5hz
-#define AP_MOTORS_THR_MIX_MIN_DEFAULT   0.1f    // minimum throttle mix
-#define AP_MOTORS_THR_MIX_MID_DEFAULT   0.5f    // manual throttle mix
-#define AP_MOTORS_THR_MIX_MAX_DEFAULT   0.9f    // maximum throttle mix
-
-// bit mask for recording which limits we have reached when outputting to motors
-#define AP_MOTOR_NO_LIMITS_REACHED  0x00
-#define AP_MOTOR_ROLLPITCH_LIMIT    0x01
-#define AP_MOTOR_YAW_LIMIT          0x02
-#define AP_MOTOR_THROTTLE_LIMIT     0x04
-#define AP_MOTOR_ANY_LIMIT          0xFF
-
-// To-Do: replace this hard coded counter with a timer
-#if HAL_CPU_CLASS < HAL_CPU_CLASS_75 || CONFIG_HAL_BOARD == HAL_BOARD_SITL || CONFIG_HAL_BOARD == HAL_BOARD_LINUX
- // slow start increments - throttle increase per (100hz) iteration.  i.e. 5 = full speed in 2 seconds
- #define AP_MOTOR_SLOW_START_INCREMENT           10      // max throttle ramp speed (i.e. motors can reach full throttle in 1 second)
- #define AP_MOTOR_SLOW_START_LOW_END_INCREMENT   2       // min throttle ramp speed (i.e. motors will speed up from zero to _spin_when_armed speed in about 1 second)
-#else
- // slow start increments - throttle increase per (400hz) iteration.  i.e. 1 = full speed in 2.5 seconds
- #define AP_MOTOR_SLOW_START_INCREMENT           3       // max throttle ramp speed (i.e. motors can reach full throttle in 0.8 seconds)
- #define AP_MOTOR_SLOW_START_LOW_END_INCREMENT   1       // min throttle ramp speed (i.e. motors will speed up from zero to _spin_when_armed speed in about 0.3 second)
-#endif
 /// @class      AP_Motors
 class AP_Motors {
 public:
 
+    enum motor_frame_class {
+        MOTOR_FRAME_UNDEFINED = 0,
+        MOTOR_FRAME_QUAD = 1,
+        MOTOR_FRAME_HEXA = 2,
+        MOTOR_FRAME_OCTA = 3,
+        MOTOR_FRAME_OCTAQUAD = 4,
+        MOTOR_FRAME_Y6 = 5,
+        MOTOR_FRAME_HELI = 6,
+        MOTOR_FRAME_TRI = 7,
+        MOTOR_FRAME_SINGLE = 8,
+        MOTOR_FRAME_COAX = 9,
+        MOTOR_FRAME_TAILSITTER = 10,
+        MOTOR_FRAME_HELI_DUAL = 11,
+        MOTOR_FRAME_DODECAHEXA = 12,
+        MOTOR_FRAME_HELI_QUAD = 13,
+        MOTOR_FRAME_DECA = 14,
+        MOTOR_FRAME_SCRIPTING_MATRIX = 15,
+        MOTOR_FRAME_6DOF_SCRIPTING = 16,
+        MOTOR_FRAME_DYNAMIC_SCRIPTING_MATRIX = 17,
+    };
+
+    // return string corresponding to frame_class
+    const char* get_frame_string() const;
+
+    enum motor_frame_type {
+        MOTOR_FRAME_TYPE_PLUS = 0,
+        MOTOR_FRAME_TYPE_X = 1,
+        MOTOR_FRAME_TYPE_V = 2,
+        MOTOR_FRAME_TYPE_H = 3,
+        MOTOR_FRAME_TYPE_VTAIL = 4,
+        MOTOR_FRAME_TYPE_ATAIL = 5,
+        MOTOR_FRAME_TYPE_PLUSREV = 6, // plus with reversed motor direction
+        MOTOR_FRAME_TYPE_Y6B = 10,
+        MOTOR_FRAME_TYPE_Y6F = 11, // for FireFlyY6
+        MOTOR_FRAME_TYPE_BF_X = 12, // X frame, betaflight ordering
+        MOTOR_FRAME_TYPE_DJI_X = 13, // X frame, DJI ordering
+        MOTOR_FRAME_TYPE_CW_X = 14, // X frame, clockwise ordering
+        MOTOR_FRAME_TYPE_I = 15, // (sideways H) octo only
+        MOTOR_FRAME_TYPE_NYT_PLUS = 16, // plus frame, no differential torque for yaw
+        MOTOR_FRAME_TYPE_NYT_X = 17, // X frame, no differential torque for yaw
+        MOTOR_FRAME_TYPE_BF_X_REV = 18, // X frame, betaflight ordering, reversed motors
+        MOTOR_FRAME_TYPE_Y4 = 19, //Y4 Quadrotor frame
+    };
+
+
+    // returns a formatted string into buffer, e.g. "QUAD/X"
+    void get_frame_and_type_string(char *buffer, uint8_t buflen) const;
+
     // Constructor
-    AP_Motors(uint16_t loop_rate, uint16_t speed_hz = AP_MOTORS_SPEED_DEFAULT);
+    AP_Motors(uint16_t speed_hz = AP_MOTORS_SPEED_DEFAULT);
 
-    // init
-    virtual void        Init() {}
+    // singleton support
+    static AP_Motors    *get_singleton(void) { return _singleton; }
 
-    // set update rate to motors - a value in hertz
-    virtual void        set_update_rate( uint16_t speed_hz ) { _speed_hz = speed_hz; };
-
-    // set frame orientation (normally + or X)
-    virtual void        set_frame_orientation( uint8_t new_orientation ) { _flags.frame_orientation = new_orientation; };
-
-    // enable - starts allowing signals to be sent to motors
-    virtual void        enable() = 0;
+    // check initialisation succeeded
+    virtual bool        arming_checks(size_t buflen, char *buffer) const;
+    virtual bool        motor_test_checks(size_t buflen, char *buffer) const;
+    bool                initialised_ok() const { return _initialised_ok; }
+    void                set_initialised_ok(bool val) { _initialised_ok = val; }
 
     // arm, disarm or check status status of motors
-    bool                armed() const { return _flags.armed; };
+    bool                armed() const { return _armed; }
     void                armed(bool arm);
 
     // set motor interlock status
-    void                set_interlock(bool set) { _flags.interlock = set;}
+    void                set_interlock(bool set) { _interlock = set;}
 
     // get motor interlock status.  true means motors run, false motors don't run
-    bool                get_interlock() const { return _flags.interlock; };
+    bool                get_interlock() const { return _interlock; }
 
-    // set_throttle_range - sets the minimum throttle that will be sent to the engines when they're not off (i.e. to prevents issues with some motors spinning and some not at very low throttle)
-    // also sets throttle channel minimum and maximum pwm
-    void                set_throttle_range(uint16_t min_throttle, int16_t radio_min, int16_t radio_max);
-
-    // set_hover_throttle - sets the mid throttle which is close to the hover throttle of the copter
-    // this is used to limit the amount that the stability patch will increase the throttle to give more room for roll, pitch and yaw control
-    void                set_hover_throttle(uint16_t hov_thr) { _hover_out = hov_thr; }
-
-    // get_hover_throttle_as_pwm - converts hover throttle to pwm (i.e. range 1000 ~ 2000)
-    int16_t             get_hover_throttle_as_pwm() const;
-
-    int16_t             throttle_min() const { return _min_throttle;}
-    int16_t             throttle_max() const { return _max_throttle;}
+    // get/set spoolup block
+    bool                get_spoolup_block() const { return _spoolup_block; }
+    void                set_spoolup_block(bool set) { _spoolup_block = set; }
 
     // set_roll, set_pitch, set_yaw, set_throttle
-    void                set_roll(int16_t roll_in) { _roll_control_input = roll_in; };                   // range -4500 ~ 4500
-    void                set_pitch(int16_t pitch_in) { _pitch_control_input = pitch_in; };               // range -4500 ~ 4500
-    void                set_yaw(int16_t yaw_in) { _yaw_control_input = yaw_in; };                       // range -4500 ~ 4500
-    void                set_throttle(float throttle_in) { _throttle_in = throttle_in; };                // range 0 ~ 1000
-    void                set_stabilizing(bool stabilizing) { _flags.stabilizing = stabilizing; }
+    void                set_roll(float roll_in) { _roll_in = roll_in; };        // range -1 ~ +1
+    void                set_roll_ff(float roll_in) { _roll_in_ff = roll_in; };    // range -1 ~ +1
+    void                set_pitch(float pitch_in) { _pitch_in = pitch_in; };    // range -1 ~ +1
+    void                set_pitch_ff(float pitch_in) { _pitch_in_ff = pitch_in; };  // range -1 ~ +1
+    void                set_yaw(float yaw_in) { _yaw_in = yaw_in; };            // range -1 ~ +1
+    void                set_yaw_ff(float yaw_in) { _yaw_in_ff = yaw_in; };      // range -1 ~ +1
+    void                set_throttle(float throttle_in) { _throttle_in = throttle_in; };   // range 0 ~ 1
+    void                set_throttle_avg_max(float throttle_avg_max) { _throttle_avg_max = constrain_float(throttle_avg_max, 0.0f, 1.0f); };   // range 0 ~ 1
+    void                set_throttle_filter_cutoff(float filt_hz) { _throttle_filter.set_cutoff_frequency(filt_hz); }
+    void                set_slew_filter_cutoff(float filt_hz) { _throttle_slew_filter.set_cutoff_frequency(filt_hz); }
+    void                set_forward(float forward_in) { _forward_in = forward_in; }; // range -1 ~ +1
+    void                set_lateral(float lateral_in) { _lateral_in = lateral_in; };     // range -1 ~ +1
+
+    // for 6DoF vehicles, sets the roll and pitch offset, this rotates the thrust vector in body frame
+    virtual void        set_roll_pitch(float roll_deg, float pitch_deg) {};
 
     // accessors for roll, pitch, yaw and throttle inputs to motors
-    float               get_roll() const { return _roll_control_input; }
-    float               get_pitch() const { return _pitch_control_input; }
-    float               get_yaw() const { return _yaw_control_input; }
-    float               get_throttle() const { return _throttle_control_input; }
+    float               get_roll() const { return _roll_in; }
+    float               get_roll_ff() const { return _roll_in_ff; }
+    float               get_pitch() const { return _pitch_in; }
+    float               get_pitch_ff() const { return _pitch_in_ff; }
+    float               get_yaw() const { return _yaw_in; }
+    float               get_yaw_ff() const { return _yaw_in_ff; }
+    float               get_throttle_out() const { return _throttle_out; }
+    virtual bool        get_thrust(uint8_t motor_num, float& thr_out) const { return false; }
+    float               get_throttle() const { return constrain_float(_throttle_filter.get(), 0.0f, 1.0f); }
+    float               get_throttle_bidirectional() const { return constrain_float(2 * (_throttle_filter.get() - 0.5f), -1.0f, 1.0f); }
+    float               get_throttle_slew_rate() const { return _throttle_slew_rate; }
+    float               get_forward() const { return _forward_in; }
+    float               get_lateral() const { return _lateral_in; }
+    virtual float       get_throttle_hover() const = 0;
 
-    void                set_throttle_filter_cutoff(float filt_hz) { _throttle_filter.set_cutoff_frequency(filt_hz); }
+    // motor failure handling
+    void                set_thrust_boost(bool enable) { _thrust_boost = enable; }
+    bool                get_thrust_boost() const { return _thrust_boost; }
+    virtual uint8_t     get_lost_motor() const { return 0; }
+
+    // desired spool states
+    enum class DesiredSpoolState : uint8_t {
+        SHUT_DOWN = 0,              // all motors should move to stop
+        GROUND_IDLE = 1,            // all motors should move to ground idle
+        THROTTLE_UNLIMITED = 2,     // motors should move to being a state where throttle is unconstrained (e.g. by start up procedure)
+    };
+
+    void set_desired_spool_state(enum DesiredSpoolState spool);
+
+    enum DesiredSpoolState get_desired_spool_state(void) const { return _spool_desired; }
+
+    // spool states
+    enum class SpoolState : uint8_t {
+        SHUT_DOWN = 0,                      // all motors stop
+        GROUND_IDLE = 1,                    // all motors at ground idle
+        SPOOLING_UP = 2,                       // increasing maximum throttle while stabilizing
+        THROTTLE_UNLIMITED = 3,             // throttle is no longer constrained by start up procedure
+        SPOOLING_DOWN = 4,                     // decreasing maximum throttle while stabilizing
+    };
+
+    // get_spool_state - get current spool state
+    enum SpoolState  get_spool_state(void) const { return _spool_state; }
+
+    // set_dt / get_dt - dt is the time since the last time the motor mixers were updated
+    //   _dt should be set based on the time of the last IMU read used by these controllers
+    //   the motor mixers should run on each loop to ensure normal operation
+    void set_dt(float dt) { _dt = dt; }
+    float get_dt() const { return _dt; }
+
+    // structure for holding motor limit flags
+    struct AP_Motors_limit {
+        bool roll;           // we have reached roll or pitch limit
+        bool pitch;          // we have reached roll or pitch limit
+        bool yaw;            // we have reached yaw limit
+        bool throttle_lower; // we have reached throttle's lower limit
+        bool throttle_upper; // we have reached throttle's upper limit
+    } limit;
+
+    // set limit flag for pitch, roll and yaw
+    void set_limit_flag_pitch_roll_yaw(bool flag);
+
+#if AP_SCRIPTING_ENABLED
+    // set limit flag for pitch, roll and yaw
+    void set_external_limits(bool roll, bool pitch, bool yaw, bool throttle_lower, bool throttle_upper);
+#endif
+
+    //
+    // virtual functions that should be implemented by child classes
+    //
+
+    // set update rate to motors - a value in hertz
+    virtual void        set_update_rate( uint16_t speed_hz ) { _speed_hz = speed_hz; }
+
+    // init
+    virtual void        init(motor_frame_class frame_class, motor_frame_type frame_type) = 0;
+
+    // set frame class (i.e. quad, hexa, heli) and type (i.e. x, plus)
+    virtual void        set_frame_class_and_type(motor_frame_class frame_class, motor_frame_type frame_type) = 0;
 
     // output - sends commands to the motors
-    virtual void        output();
+    virtual void        output() = 0;
 
     // output_min - sends minimum values out to the motors
     virtual void        output_min() = 0;
 
-    // output_test - spin a motor at the pwm value specified
+    // output_test_seq - spin a motor at the pwm value specified
     //  motor_seq is the motor's sequence number from 1 to the number of motors on the frame
     //  pwm value is an actual pwm value that will be output, normally in the range of 1000 ~ 2000
-    virtual void        output_test(uint8_t motor_seq, int16_t pwm) = 0;
-
-    // throttle_pass_through - passes provided pwm directly to all motors - dangerous but used for initialising ESCs
-    //  pwm value is an actual pwm value that will be output, normally in the range of 1000 ~ 2000
-    virtual void        throttle_pass_through(int16_t pwm);
-
-    // set_yaw_headroom - set yaw headroom (yaw is given at least this amount of pwm)
-    virtual void        set_yaw_headroom(int16_t pwm) { _yaw_headroom = pwm; }
-
-    // set_voltage - set voltage to be used for output scaling
-    virtual void        set_voltage(float volts){ _batt_voltage = volts; }
-
-    // set_current - set current to be used for output scaling
-    virtual void        set_current(float current){ _batt_current = current; }
-
-    // set_density_ratio - sets air density as a proportion of sea level density
-    void                set_air_density_ratio(float ratio) { _air_density_ratio = ratio; }
-
-    // set_throttle_thr_mix - set desired throttle_thr_mix (actual throttle_thr_mix is slewed towards this value over 1~2 seconds)
-    //  low values favour pilot/autopilot throttle over attitude control, high values favour attitude control over throttle
-    //  has no effect when throttle is above hover throttle
-    void                set_throttle_mix_min() { _throttle_thr_mix_desired = _thr_mix_min; }
-    void                set_throttle_mix_mid() { _throttle_thr_mix_desired = AP_MOTORS_THR_MIX_MID_DEFAULT; }
-    void                set_throttle_mix_max() { _throttle_thr_mix_desired = AP_MOTORS_THR_MIX_MAX_DEFAULT; }
-
-    // get_throttle_thr_mix - get low throttle compensation value
-    bool                is_throttle_mix_min() { return (_throttle_thr_mix < 1.25f*_thr_mix_min); }
-
-    // get_lift_max - get maximum lift ratio
-    float               get_lift_max() { return _lift_max; }
-
-    // get_batt_voltage_filt - get battery voltage ratio
-    float               get_batt_voltage_filt() { return _batt_voltage_filt.get(); }
-
-    // get_batt_resistance - get battery resistance approximation
-    float               get_batt_resistance() { return _batt_resistance; }
-
-    // get_throttle_limit - throttle limit ratio
-    float               get_throttle_limit() { return _throttle_limit; }
-
-    // returns warning throttle
-    float               get_throttle_warn() { return rel_pwm_to_thr_range(_spin_when_armed); }
-
-    // 1 if motor is enabled, 0 otherwise
-    bool                motor_enabled[AP_MOTORS_MAX_NUM_MOTORS];
-
-    // slow_start - set to true to slew motors from current speed to maximum
-    // Note: this must be set immediately before a step up in throttle
-    void                slow_start(bool true_false);
+    void                output_test_seq(uint8_t motor_seq, int16_t pwm);
 
     // get_motor_mask - returns a bitmask of which outputs are being used for motors (1 means being used)
     //  this can be used to ensure other pwm outputs (i.e. for servos) do not conflict
-    virtual uint16_t    get_motor_mask() = 0;
+    virtual uint32_t    get_motor_mask() = 0;
 
-    // structure for holding motor limit flags
-    struct AP_Motors_limit {
-        uint8_t roll_pitch      : 1; // we have reached roll or pitch limit
-        uint8_t yaw             : 1; // we have reached yaw limit
-        uint8_t throttle_lower  : 1; // we have reached throttle's lower limit
-        uint8_t throttle_upper  : 1; // we have reached throttle's upper limit
-    } limit;
+    // pilot input in the -1 ~ +1 range for roll, pitch and yaw. 0~1 range for throttle
+    void                set_radio_passthrough(float roll_input, float pitch_input, float throttle_input, float yaw_input);
 
-    // var_info for holding Parameter information
-    static const struct AP_Param::GroupInfo        var_info[];
+    // return the roll factor of any motor, this is used for tilt rotors and tail sitters
+    // using copter motors for forward flight
+    virtual float       get_roll_factor(uint8_t i) { return 0.0f; }
+
+    // return the pitch factor of any motor
+    virtual float       get_pitch_factor(uint8_t i) { return 0.0f; }
+
+    // return whether a motor is enabled or not
+    virtual bool        is_motor_enabled(uint8_t i) { return false; }
+
+    // This function required for tradheli. Tradheli initializes targets when going from unarmed to armed state.
+    // This function is overriden in motors_heli class.   Always true for multicopters.
+    virtual bool init_targets_on_arming() const { return true; }
+
+    // returns true if the configured PWM type is digital and should have fixed endpoints
+    bool is_digital_pwm_type() const;
+
+    // returns true is pwm type is brushed
+    bool is_brushed_pwm_type() const { return _pwm_type == PWMType::BRUSHED; }
+
+    // returns true is pwm type is normal
+    bool is_normal_pwm_type() const { return (_pwm_type == PWMType::NORMAL) || (_pwm_type == PWMType::PWM_RANGE) || (_pwm_type == PWMType::PWM_ANGLE); }
+
+    MAV_TYPE get_frame_mav_type() const { return _mav_type; }
+
+    // direct motor write
+    virtual void        rc_write(uint8_t chan, uint16_t pwm);
+
+#if AP_SCRIPTING_ENABLED
+    void set_frame_string(const char * str);
+#endif
+
+#if HAL_LOGGING_ENABLED
+    // write log, to be called at 10hz
+    virtual void Log_Write() {};
+#endif
+
+    enum MotorOptions : uint8_t {
+        BATT_RAW_VOLTAGE = (1 << 0U)
+    };
+    bool has_option(MotorOptions option) { return _options.get() & uint8_t(option); }
 
 protected:
     // output functions that should be overloaded by child classes
-    virtual void        output_armed_stabilizing()=0;
-    virtual void        output_armed_not_stabilizing()=0;
-    virtual void        output_armed_zero_throttle() { output_min(); }
-    virtual void        output_disarmed()=0;
+    virtual void        output_armed_stabilizing() = 0;
+    virtual void        rc_write_angle(uint8_t chan, int16_t angle_cd);
+    virtual void        rc_set_freq(uint32_t mask, uint16_t freq_hz);
 
+
+    /*
+      map an internal motor mask to real motor mask, accounting for
+      SERVOn_FUNCTION mappings, and allowing for multiple outputs per
+      motor number
+    */
+    uint32_t    motor_mask_to_srv_channel_mask(uint32_t mask) const;
+
+    // add a motor to the motor map
+    void add_motor_num(int8_t motor_num);
+    
     // update the throttle input filter
-    virtual void        update_throttle_filter();
+    virtual void update_throttle_filter() = 0;
 
-    // update_max_throttle - updates the limits on _max_throttle for slow_start and current limiting flag
-    void                update_max_throttle();
-
-    // current_limit_max_throttle - current limit maximum throttle (called from update_max_throttle)
-    void                current_limit_max_throttle();
-
-    // apply_thrust_curve_and_volt_scaling - thrust curve and voltage adjusted pwm value (i.e. 1000 ~ 2000)
-    int16_t             apply_thrust_curve_and_volt_scaling(int16_t pwm_out, int16_t pwm_min, int16_t pwm_max) const;
-
-    // update_lift_max_from_batt_voltage - used for voltage compensation
-    void                update_lift_max_from_batt_voltage();
-
-    // update_battery_resistance - calculate battery resistance when throttle is above hover_out
-    void                update_battery_resistance();
-
-    // update_throttle_thr_mix - updates thr_low_comp value towards the target
-    void                update_throttle_thr_mix();
-
-    // return gain scheduling gain based on voltage and air density
-    float               get_compensation_gain() const;
-
-    float               rel_pwm_to_thr_range(float pwm) const;
-    float               thr_range_to_rel_pwm(float thr) const;
-
-    // convert RPY and Throttle servo ranges from legacy controller scheme back into PWM values
-    // RPY channels typically +/-45 degrees servo travel between +/-400 PWM
-    // Throttle channel typically 0-1000 range converts to 1100-1900 PWM for final output signal to motors
-    // ToDo: this should all be handled as floats +/- 1.0 instead of PWM and fake angle ranges
-    int16_t             calc_roll_pwm() { return (_roll_control_input / 11.25f);}
-    int16_t             calc_pitch_pwm() { return (_pitch_control_input / 11.25f);}
-    int16_t             calc_yaw_pwm() { return (_yaw_control_input / 11.25f);}
-    int16_t             calc_throttle_radio_output() { return (_throttle_control_input * _throttle_pwm_scalar) + _throttle_radio_min;}
-
-    // flag bitmask
-    struct AP_Motors_flags {
-        uint8_t armed              : 1;    // 0 if disarmed, 1 if armed
-        uint8_t stabilizing        : 1;    // 0 if not controlling attitude, 1 if controlling attitude
-        uint8_t frame_orientation  : 4;    // PLUS_FRAME 0, X_FRAME 1, V_FRAME 2, H_FRAME 3, NEW_PLUS_FRAME 10, NEW_X_FRAME, NEW_V_FRAME, NEW_H_FRAME
-        uint8_t slow_start         : 1;    // 1 if slow start is active
-        uint8_t slow_start_low_end : 1;    // 1 just after arming so we can ramp up the spin_when_armed value
-        uint8_t interlock          : 1;    // 1 if the motor interlock is enabled (i.e. motors run), 0 if disabled (motors don't run)
-    } _flags;
-
-    // mapping of motor number (as received from upper APM code) to RC channel output - used to account for differences between APM1 and APM2
-    static const uint8_t _motor_to_channel_map[AP_MOTORS_MAX_NUM_MOTORS] PROGMEM;
-
-    // parameters
-    AP_Int16            _spin_when_armed;       // used to control whether the motors always spin when armed.  pwm value above radio_min
-
-    AP_Int16            _yaw_headroom;          // yaw control is given at least this pwm range
-    AP_Float            _thrust_curve_expo;     // curve used to linearize pwm to thrust conversion.  set to 0 for linear and 1 for second order approximation
-    AP_Float            _thrust_curve_max;      // throttle which produces the maximum thrust.  (i.e. 0 ~ 1 ) of the full throttle range
-    AP_Float            _batt_voltage_max;      // maximum voltage used to scale lift
-    AP_Float            _batt_voltage_min;      // minimum voltage used to scale lift
-    AP_Float            _batt_current_max;      // current over which maximum throttle is limited
-    AP_Float            _thr_mix_min;           // current over which maximum throttle is limited
+    // save parameters as part of disarming
+    virtual void save_params_on_disarm() {}
 
     // internal variables
-    float               _roll_control_input;        // desired roll control from attitude controllers, +/- 4500
-    float               _pitch_control_input;       // desired pitch control from attitude controller, +/- 4500
-    float               _throttle_control_input;    // desired throttle (thrust) control from attitude controller, 0-1000
-    float               _yaw_control_input;         // desired yaw control from attitude controller, +/- 4500
-    float               _throttle_pwm_scalar;       // scalar used to convert throttle channel pwm range into 0-1000 range, ~0.8 - 1.0
-    uint16_t            _loop_rate;                 // rate at which output() function is called (normally 400hz)
+    float               _dt;                        // time difference (in seconds) since the last loop time
     uint16_t            _speed_hz;                  // speed in hz to send updates to motors
-    int16_t             _min_throttle;              // the minimum throttle to be sent to the motors when they're on (prevents motors stalling while flying)
-    int16_t             _max_throttle;              // the maximum throttle to be sent to the motors (sometimes limited by slow start)
-    int16_t             _throttle_radio_min;        // minimum radio channel pwm
-    int16_t             _throttle_radio_max;        // maximum radio channel pwm
-    int16_t             _hover_out;                 // the estimated hover throttle as pct * 10 (i.e. 0 ~ 1000)
-    int16_t             _spin_when_armed_ramped;    // equal to _spin_when_armed parameter but slowly ramped up from zero
-    float               _throttle_thr_mix;          // mix between throttle and hover throttle for 0 to 1 and ratio above hover throttle for >1
-    float               _throttle_thr_mix_desired;  // desired throttle_low_comp value, actual throttle_low_comp is slewed towards this value over 1~2 seconds
+    float               _roll_in;                   // desired roll control from attitude controllers, -1 ~ +1
+    float               _roll_in_ff;                // desired roll feed forward control from attitude controllers, -1 ~ +1
+    float               _pitch_in;                  // desired pitch control from attitude controller, -1 ~ +1
+    float               _pitch_in_ff;               // desired pitch feed forward control from attitude controller, -1 ~ +1
+    float               _yaw_in;                    // desired yaw control from attitude controller, -1 ~ +1
+    float               _yaw_in_ff;                 // desired yaw feed forward control from attitude controller, -1 ~ +1
+    float               _throttle_in;               // last throttle input from set_throttle caller
+    float               _throttle_out;              // throttle after mixing is complete
+    float               _throttle_slew_rate;        // throttle slew rate from input
+    float               _forward_in;                // last forward input from set_forward caller
+    float               _lateral_in;                // last lateral input from set_lateral caller
+    float               _throttle_avg_max;          // last throttle input from set_throttle_avg_max
+    LowPassFilterFloat  _throttle_filter;           // pilot throttle input filter
+    DerivativeFilterFloat_Size7  _throttle_slew;    // throttle output slew detector
+    LowPassFilterFloat  _throttle_slew_filter;      // filter for the output of the throttle slew
+    DesiredSpoolState   _spool_desired;             // desired spool state
+    SpoolState          _spool_state;               // current spool mode
 
-    // battery voltage compensation variables
-    float               _batt_voltage;          // latest battery voltage reading
-    float               _batt_voltage_resting;  // battery voltage reading at minimum throttle
-    LowPassFilterFloat  _batt_voltage_filt;     // filtered battery voltage expressed as a percentage (0 ~ 1.0) of batt_voltage_max
-    float               _batt_current;          // latest battery current reading
-    float               _batt_current_resting;  // battery's current when motors at minimum
-    float               _batt_resistance;       // battery's resistance calculated by comparing resting voltage vs in flight voltage
-    int16_t             _batt_timer;            // timer used in battery resistance calcs
-    float               _air_density_ratio;     // air density / sea level density - decreases in altitude
-    float               _lift_max;              // maximum lift ratio from battery voltage
-    float               _throttle_limit;        // ratio of throttle limit between hover and maximum
-    float               _throttle_in;           // last throttle input from set_throttle caller
-    LowPassFilterFloat  _throttle_filter;       // throttle input filter
+    // mask of what channels need fast output
+    uint32_t            _motor_fast_mask;
+
+    // Used with PWMType::PWM_RANGE and PWMType::PWM_ANGLE
+    struct {
+        // Mask of motors using scaled output
+        uint32_t mask;
+
+        // Offset used to convert from PWM to scaled value
+        float offset;
+    } _motor_pwm_scaled;
+
+    
+    // pass through variables
+    float _roll_radio_passthrough;     // roll input from pilot in -1 ~ +1 range.  used for setup and providing servo feedback while landed
+    float _pitch_radio_passthrough;    // pitch input from pilot in -1 ~ +1 range.  used for setup and providing servo feedback while landed
+    float _throttle_radio_passthrough; // throttle/collective input from pilot in 0 ~ 1 range.  used for setup and providing servo feedback while landed
+    float _yaw_radio_passthrough;      // yaw input from pilot in -1 ~ +1 range.  used for setup and providing servo feedback while landed
+
+    enum class PWMType : uint8_t {
+        NORMAL     = 0,
+        ONESHOT    = 1,
+        ONESHOT125 = 2,
+        BRUSHED    = 3,
+        DSHOT150   = 4,
+        DSHOT300   = 5,
+        DSHOT600   = 6,
+        DSHOT1200  = 7,
+        PWM_RANGE  = 8,
+        PWM_ANGLE  = 9,
+    };
+
+    AP_Enum<PWMType>             _pwm_type;            // PWM output type
+
+    // motor failure handling
+    bool                _thrust_boost;          // true if thrust boost is enabled to handle motor failure
+    bool                _thrust_balanced;       // true when output thrust is well balanced
+    float               _thrust_boost_ratio;    // choice between highest and second highest motor output for output mixing (0 ~ 1). Zero is normal operation
+
+    // motor options
+    AP_Int16            _options;
+
+    MAV_TYPE _mav_type; // MAV_TYPE_GENERIC = 0;
+
+    // return string corresponding to frame_class
+    virtual const char* _get_frame_string() const = 0;
+
+    // return string corresponding to frame_type
+    virtual const char* get_type_string() const { return ""; }
+
+    // output_test_seq - spin a motor at the pwm value specified
+    //  motor_seq is the motor's sequence number from 1 to the number of motors on the frame
+    //  pwm value is an actual pwm value that will be output, normally in the range of 1000 ~ 2000
+    virtual void _output_test_seq(uint8_t motor_seq, int16_t pwm) = 0;
+
+#if AP_SCRIPTING_ENABLED
+    // Custom frame string set from scripting
+    char* custom_frame_string;
+
+    // external limits from scripting
+    AP_Motors_limit external_limits;
+#endif
+
+private:
+
+    bool _armed;             // 0 if disarmed, 1 if armed
+    bool _interlock;         // 1 if the motor interlock is enabled (i.e. motors run), 0 if disabled (motors don't run)
+    bool _initialised_ok;    // 1 if initialisation was successful
+    bool _spoolup_block;     // true if spoolup is blocked
+
+    static AP_Motors *_singleton;
 };
-#endif  // __AP_MOTORS_CLASS_H__
+
+namespace AP {
+    AP_Motors *motors();
+};

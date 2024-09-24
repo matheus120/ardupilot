@@ -1,46 +1,24 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 //
 // Simple test for the AP_Scheduler interface
 //
 
-#include <AP_HAL.h>
-#include <AP_Common.h>
-#include <AP_Progmem.h>
-#include <AP_Math.h>
-#include <AP_Param.h>
-#include <AP_InertialSensor.h>
-#include <AP_ADC.h>
-#include <AP_ADC_AnalogSource.h>
-#include <AP_Baro.h>
-#include <AP_GPS.h>
-#include <AP_AHRS.h>
-#include <AP_Compass.h>
-#include <AP_Declination.h>
-#include <AP_Airspeed.h>
-#include <AP_Baro.h>
-#include <GCS_MAVLink.h>
-#include <AP_Mission.h>
-#include <StorageManager.h>
-#include <AP_Terrain.h>
-#include <Filter.h>
-#include <SITL.h>
-#include <AP_Buffer.h>
-#include <AP_Notify.h>
-#include <AP_Vehicle.h>
-#include <DataFlash.h>
-#include <AP_NavEKF.h>
-#include <AP_Rally.h>
-#include <AP_BattMonitor.h>
-#include <AP_Scheduler.h>
-#include <AP_RangeFinder.h>
+#include <AP_HAL/AP_HAL.h>
+#include <AP_InertialSensor/AP_InertialSensor.h>
+#include <AP_ExternalAHRS/AP_ExternalAHRS.h>
+#include <AP_Scheduler/AP_Scheduler.h>
+#include <AP_BoardConfig/AP_BoardConfig.h>
+#include <AP_Logger/AP_Logger.h>
+#include <GCS_MAVLink/GCS_Dummy.h>
+#include <stdio.h>
 
-#include <AP_HAL_AVR.h>
-#include <AP_HAL_SITL.h>
-#include <AP_HAL_Empty.h>
-#include <AP_HAL_PX4.h>
+const struct AP_Param::GroupInfo        GCS_MAVLINK_Parameters::var_info[] = {
+    AP_GROUPEND
+};
+GCS_Dummy _gcs;
 
-const AP_HAL::HAL& hal = AP_HAL_BOARD_DRIVER;
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();
+
+AP_Logger logger;
 
 class SchedTest {
 public:
@@ -49,10 +27,14 @@ public:
 
 private:
 
-    AP_InertialSensor ins;
+#if HAL_EXTERNAL_AHRS_ENABLED
+    AP_ExternalAHRS eAHRS;
+#endif // HAL_EXTERNAL_AHRS_ENABLED
     AP_Scheduler scheduler;
 
     uint32_t ins_counter;
+    uint32_t count_5s;
+    uint32_t count_1s;
     static const AP_Scheduler::Task scheduler_tasks[];
 
     void ins_update(void);
@@ -60,42 +42,73 @@ private:
     void five_second_call(void);
 };
 
+static AP_BoardConfig board_config;
 static SchedTest schedtest;
 
-#define SCHED_TASK(func) FUNCTOR_BIND_VOID(&schedtest, &SchedTest::func, void)
+#define SCHED_TASK(func, _interval_ticks, _max_time_micros, _priority) SCHED_TASK_CLASS(SchedTest, &schedtest, func, _interval_ticks, _max_time_micros, _priority)
 
 /*
-  scheduler table - all regular tasks are listed here, along with how
-  often they should be called (in 20ms units) and the maximum time
-  they are expected to take (in microseconds)
+  scheduler table - all regular tasks should be listed here.
+
+  All entries in this table must be ordered by priority.
+
+  This table is interleaved with the table in AP_Vehicle to determine
+  the order in which tasks are run.  Convenience methods SCHED_TASK
+  and SCHED_TASK_CLASS are provided to build entries in this structure:
+
+SCHED_TASK arguments:
+ - name of static function to call
+ - rate (in Hertz) at which the function should be called
+ - expected time (in MicroSeconds) that the function should take to run
+ - priority (0 through 255, lower number meaning higher priority)
+
+SCHED_TASK_CLASS arguments:
+ - class name of method to be called
+ - instance on which to call the method
+ - method to call on that instance
+ - rate (in Hertz) at which the method should be called
+ - expected time (in MicroSeconds) that the method should take to run
+ - priority (0 through 255, lower number meaning higher priority)
+
  */
-const AP_Scheduler::Task SchedTest::scheduler_tasks[] PROGMEM = {
-    { SCHED_TASK(ins_update),             1,   1000 },
-    { SCHED_TASK(one_hz_print),          50,   1000 },
-    { SCHED_TASK(five_second_call),     250,   1800 },
+const AP_Scheduler::Task SchedTest::scheduler_tasks[] = {
+    SCHED_TASK(ins_update,             50,   1000, 3),
+    SCHED_TASK(one_hz_print,            1,   1000, 6),
+    SCHED_TASK(five_second_call,      0.2,   1800, 9),
 };
 
 
 void SchedTest::setup(void)
 {
-    // we 
-    ins.init(AP_InertialSensor::COLD_START, 
-			 AP_InertialSensor::RATE_50HZ);
+
+    board_config.init();
 
     // initialise the scheduler
-    scheduler.init(&scheduler_tasks[0], sizeof(scheduler_tasks)/sizeof(scheduler_tasks[0]));
+    scheduler.init(&scheduler_tasks[0], ARRAY_SIZE(scheduler_tasks), (uint32_t)-1);
 }
 
 void SchedTest::loop(void)
 {
-    // wait for an INS sample
-    ins.wait_for_sample();
-
-    // tell the scheduler one tick has passed
-    scheduler.tick();
-
-    // run all tasks that fit in 20ms
-    scheduler.run(20000);
+    // run all tasks
+    scheduler.loop();
+    if (ins_counter == 1000) {
+        bool ok = true;
+        if (count_5s != 4) {
+            ::printf("ERROR: count_5s=%u\n", (unsigned)count_5s);
+            ok = false;
+        }
+        if (count_1s != 20) {
+            ::printf("ERROR: count_1s=%u\n", (unsigned)count_1s);
+            ok = false;
+        }
+        if (!ok) {
+            ::printf("Test FAILED\n");
+            exit(1);
+        } else {
+            ::printf("Test PASSED\n");
+            exit(0);
+        }
+    }
 }
 
 /*
@@ -104,7 +117,6 @@ void SchedTest::loop(void)
 void SchedTest::ins_update(void)
 {
     ins_counter++;
-    ins.update();
 }
 
 /*
@@ -112,7 +124,8 @@ void SchedTest::ins_update(void)
  */
 void SchedTest::one_hz_print(void)
 {
-    hal.console->printf("one_hz: t=%lu\n", hal.scheduler->millis());
+    hal.console->printf("one_hz: t=%lu\n", (unsigned long)AP_HAL::millis());
+    count_1s++;
 }
 
 /*
@@ -120,7 +133,8 @@ void SchedTest::one_hz_print(void)
  */
 void SchedTest::five_second_call(void)
 {
-    hal.console->printf("five_seconds: t=%lu ins_counter=%u\n", hal.scheduler->millis(), ins_counter);
+    hal.console->printf("five_seconds: t=%lu ins_counter=%u\n", (unsigned long)AP_HAL::millis(), (unsigned)ins_counter);
+    count_5s++;
 }
 
 /*
@@ -133,8 +147,10 @@ void setup(void)
 {
     schedtest.setup();
 }
+
 void loop(void)
 {
     schedtest.loop();
 }
+
 AP_HAL_MAIN();

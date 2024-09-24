@@ -1,4 +1,3 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -21,76 +20,99 @@ This provides some support code and variables for MAVLink enabled sketches
 
 */
 
-#include <AP_HAL.h>
-#include <AP_Common.h>
-#include <GCS_MAVLink.h>
-#include <GCS.h>
-#include <AP_GPS.h>
+#include "GCS_config.h"
+
+#if HAL_MAVLINK_BINDINGS_ENABLED
+
+#include "GCS.h"
+#include "GCS_MAVLink.h"
+
+#include <AP_Common/AP_Common.h>
+#include <AP_HAL/AP_HAL.h>
+
+extern const AP_HAL::HAL& hal;
 
 #ifdef MAVLINK_SEPARATE_HELPERS
-#include "include/mavlink/v1.0/mavlink_helpers.h"
+// Shut up warnings about missing declarations; TODO: should be fixed on
+// mavlink/pymavlink project for when MAVLINK_SEPARATE_HELPERS is defined
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-declarations"
+#include "include/mavlink/v2.0/mavlink_helpers.h"
+#pragma GCC diagnostic pop
 #endif
 
+mavlink_message_t* mavlink_get_channel_buffer(uint8_t chan) {
+#if HAL_GCS_ENABLED
+    GCS_MAVLINK *link = gcs().chan(chan);
+    if (link == nullptr) {
+        return nullptr;
+    }
+    return link->channel_buffer();
+#else
+    return nullptr;
+#endif
+}
+
+mavlink_status_t* mavlink_get_channel_status(uint8_t chan) {
+#if HAL_GCS_ENABLED
+    GCS_MAVLINK *link = gcs().chan(chan);
+    if (link == nullptr) {
+        return nullptr;
+    }
+    return link->channel_status();
+#else
+    return nullptr;
+#endif
+}
+
+#endif // HAL_MAVLINK_BINDINGS_ENABLED
+
+#if HAL_GCS_ENABLED
+
 AP_HAL::UARTDriver	*mavlink_comm_port[MAVLINK_COMM_NUM_BUFFERS];
+bool gcs_alternative_active[MAVLINK_COMM_NUM_BUFFERS];
+
+// per-channel lock
+static HAL_Semaphore chan_locks[MAVLINK_COMM_NUM_BUFFERS];
+static bool chan_discard[MAVLINK_COMM_NUM_BUFFERS];
 
 mavlink_system_t mavlink_system = {7,1};
-
-// mask of serial ports disabled to allow for SERIAL_CONTROL
-static uint8_t mavlink_locked_mask;
 
 // routing table
 MAVLink_routing GCS_MAVLINK::routing;
 
-// snoop function for vehicle types that want to see messages for
-// other targets
-void (*GCS_MAVLINK::msg_snoop)(const mavlink_message_t* msg) = NULL;
-
-/*
-  lock a channel, preventing use by MAVLink
- */
-void GCS_MAVLINK::lock_channel(mavlink_channel_t _chan, bool lock)
-{
-    if (_chan >= MAVLINK_COMM_NUM_BUFFERS) {
-        return;
+GCS_MAVLINK *GCS_MAVLINK::find_by_mavtype_and_compid(uint8_t mav_type, uint8_t compid, uint8_t &sysid) {
+    mavlink_channel_t channel;
+    if (!routing.find_by_mavtype_and_compid(mav_type, compid, sysid, channel)) {
+        return nullptr;
     }
-    if (lock) {
-        mavlink_locked_mask |= (1U<<(unsigned)_chan);
-    } else {
-        mavlink_locked_mask &= ~(1U<<(unsigned)_chan);
-    }
+    return gcs().chan(channel);
 }
 
-// return a MAVLink variable type given a AP_Param type
-uint8_t mav_var_type(enum ap_var_type t)
+// set a channel as private. Private channels get sent heartbeats, but
+// don't get broadcast packets or forwarded packets
+void GCS_MAVLINK::set_channel_private(mavlink_channel_t _chan)
+{
+    const uint8_t mask = (1U<<(unsigned)_chan);
+    mavlink_private |= mask;
+}
+
+// return a MAVLink parameter type given a AP_Param type
+MAV_PARAM_TYPE GCS_MAVLINK::mav_param_type(enum ap_var_type t)
 {
     if (t == AP_PARAM_INT8) {
-	    return MAVLINK_TYPE_INT8_T;
+	    return MAV_PARAM_TYPE_INT8;
     }
     if (t == AP_PARAM_INT16) {
-	    return MAVLINK_TYPE_INT16_T;
+	    return MAV_PARAM_TYPE_INT16;
     }
     if (t == AP_PARAM_INT32) {
-	    return MAVLINK_TYPE_INT32_T;
+	    return MAV_PARAM_TYPE_INT32;
     }
     // treat any others as float
-    return MAVLINK_TYPE_FLOAT;
+    return MAV_PARAM_TYPE_REAL32;
 }
 
-
-/// Read a byte from the nominated MAVLink channel
-///
-/// @param chan		Channel to receive on
-/// @returns		Byte read
-///
-uint8_t comm_receive_ch(mavlink_channel_t chan)
-{
-    // sanity check chan
-    if (chan >= MAVLINK_COMM_NUM_BUFFERS) {
-        return 0;
-    }
-
-    return (uint8_t)mavlink_comm_port[chan]->read();
-}
 
 /// Check for available transmit space on the nominated MAVLink channel
 ///
@@ -98,38 +120,11 @@ uint8_t comm_receive_ch(mavlink_channel_t chan)
 /// @returns		Number of bytes available
 uint16_t comm_get_txspace(mavlink_channel_t chan)
 {
-    // sanity check chan
-    if (chan >= MAVLINK_COMM_NUM_BUFFERS) {
+    GCS_MAVLINK *link = gcs().chan(chan);
+    if (link == nullptr) {
         return 0;
     }
-    if ((1U<<chan) & mavlink_locked_mask) {
-        return 0;
-    }
-	int16_t ret = mavlink_comm_port[chan]->txspace();
-	if (ret < 0) {
-		ret = 0;
-	}
-    return (uint16_t)ret;
-}
-
-/// Check for available data on the nominated MAVLink channel
-///
-/// @param chan		Channel to check
-/// @returns		Number of bytes available
-uint16_t comm_get_available(mavlink_channel_t chan)
-{
-    // sanity check chan
-    if (chan >= MAVLINK_COMM_NUM_BUFFERS) {
-        return 0;
-    }
-    if ((1U<<chan) & mavlink_locked_mask) {
-        return 0;
-    }
-    int16_t bytes = mavlink_comm_port[chan]->available();
-	if (bytes == -1) {
-		return 0;
-	}
-    return (uint16_t)bytes;
+    return link->txspace();
 }
 
 /*
@@ -137,29 +132,63 @@ uint16_t comm_get_available(mavlink_channel_t chan)
  */
 void comm_send_buffer(mavlink_channel_t chan, const uint8_t *buf, uint8_t len)
 {
-    // sanity check chan
-    if (chan >= MAVLINK_COMM_NUM_BUFFERS) {
+    if (!valid_channel(chan) || mavlink_comm_port[chan] == nullptr || chan_discard[chan]) {
         return;
     }
-    mavlink_comm_port[chan]->write(buf, len);
+#if HAL_HIGH_LATENCY2_ENABLED
+    // if it's a disabled high latency channel, don't send
+    GCS_MAVLINK *link = gcs().chan(chan);
+    if (link->is_high_latency_link && !gcs().get_high_latency_status()) {
+        return;
+    }
+#endif
+    if (gcs_alternative_active[chan]) {
+        // an alternative protocol is active
+        return;
+    }
+    const size_t written = mavlink_comm_port[chan]->write(buf, len);
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+    if (written < len && !mavlink_comm_port[chan]->is_write_locked()) {
+        AP_HAL::panic("Short write on UART: %lu < %u", (unsigned long)written, len);
+    }
+#else
+    (void)written;
+#endif
 }
-
-static const uint8_t mavlink_message_crc_progmem[256] PROGMEM = MAVLINK_MESSAGE_CRCS;
-
-// return CRC byte for a mavlink message ID
-uint8_t mavlink_get_message_crc(uint8_t msgid)
-{
-	return pgm_read_byte(&mavlink_message_crc_progmem[msgid]);
-}
-
-extern const AP_HAL::HAL& hal;
 
 /*
-  return true if the MAVLink parser is idle, so there is no partly parsed
-  MAVLink message being processed
+  lock a channel for send
+  if there is insufficient space to send size bytes then all bytes
+  written to the channel by the mavlink library will be discarded
+  while the lock is held.
  */
-bool comm_is_idle(mavlink_channel_t chan)
+void comm_send_lock(mavlink_channel_t chan_m, uint16_t size)
 {
-	mavlink_status_t *status = mavlink_get_channel_status(chan);
-	return status == NULL || status->parse_state <= MAVLINK_PARSE_STATE_IDLE;
+    const uint8_t chan = uint8_t(chan_m);
+    chan_locks[chan].take_blocking();
+    if (mavlink_comm_port[chan]->txspace() < size) {
+        chan_discard[chan] = true;
+        gcs_out_of_space_to_send(chan_m);
+    }
 }
+
+/*
+  unlock a channel
+ */
+void comm_send_unlock(mavlink_channel_t chan_m)
+{
+    const uint8_t chan = uint8_t(chan_m);
+    chan_discard[chan] = false;
+    chan_locks[chan].give();
+}
+
+/*
+  return reference to GCS channel lock, allowing for
+  HAVE_PAYLOAD_SPACE() to be run with a locked channel
+ */
+HAL_Semaphore &comm_chan_lock(mavlink_channel_t chan)
+{
+    return chan_locks[uint8_t(chan)];
+}
+
+#endif  // HAL_GCS_ENABLED

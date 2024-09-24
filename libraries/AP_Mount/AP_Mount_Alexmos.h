@@ -1,108 +1,34 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 /*
   Alexmos Serial controlled mount backend class
 */
+#pragma once
 
-#ifndef __AP_MOUNT_ALEXMOS_H__
-#define __AP_MOUNT_ALEXMOS_H__
+#include "AP_Mount_Backend.h"
 
-#include <AP_Mount.h>
-#include <AP_HAL.h>
-#include <AP_Param.h>
-#include <AP_Math.h>
-#include <AP_GPS.h>
-#include <AP_AHRS.h>
-#include <AP_Mount_Backend.h>
-
-
-//definition of the commands id for the Alexmos Serial Protocol
-#define CMD_READ_PARAMS 'R'
-#define CMD_WRITE_PARAMS 'W'
-#define CMD_REALTIME_DATA 'D'
-#define CMD_BOARD_INFO 'V'
-#define CMD_CALIB_ACC 'A'
-#define CMD_CALIB_GYRO 'g'
-#define CMD_CALIB_EXT_GAIN 'G'
-#define CMD_USE_DEFAULTS 'F'
-#define CMD_CALIB_POLES 'P'
-#define CMD_RESET 'r'
-#define CMD_HELPER_DATA 'H'
-#define CMD_CALIB_OFFSET 'O'
-#define CMD_CALIB_BAT 'B'
-#define CMD_MOTORS_ON 'M'
-#define CMD_MOTORS_OFF 'm'
-#define CMD_CONTROL 'C'
-#define CMD_TRIGGER_PIN 'T'
-#define CMD_EXECUTE_MENU 'E'
-#define CMD_GET_ANGLES 'I'
-#define CMD_CONFIRM 'C'
-// Board v3.x only
-#define CMD_BOARD_INFO_3 20
-#define CMD_READ_PARAMS_3 21
-#define CMD_WRITE_PARAMS_3 22
-#define CMD_REALTIME_DATA_3 23
-#define CMD_SELECT_IMU_3 24
-#define CMD_READ_PROFILE_NAMES 28
-#define CMD_WRITE_PROFILE_NAMES 29
-#define CMD_QUEUE_PARAMS_INFO_3 30
-#define CMD_SET_PARAMS_3 31
-#define CMD_SAVE_PARAMS_3 32
-#define CMD_READ_PARAMS_EXT 33
-#define CMD_WRITE_PARAMS_EXT 34
-#define CMD_AUTO_PID 35
-#define CMD_SERVO_OUT 36
-#define CMD_ERROR 255
-
-#define AP_MOUNT_ALEXMOS_MODE_NO_CONTROL 0
-#define AP_MOUNT_ALEXMOS_MODE_SPEED 1
-#define AP_MOUNT_ALEXMOS_MODE_ANGLE 2
-#define AP_MOUNT_ALEXMOS_MODE_SPEED_ANGLE 3
-#define AP_MOUNT_ALEXMOS_MODE_RC 4
-
-#define AP_MOUNT_ALEXMOS_SPEED 30 // degree/s2
-
-#define VALUE_TO_DEGREE(d) ((float)((d * 720) >> 15))
-#define DEGREE_TO_VALUE(d) ((int16_t)((float)(d)*(1.0f/0.02197265625f)))
-#define DEGREE_PER_SEC_TO_VALUE(d) ((int16_t)((float)(d)*(1.0f/0.1220740379f)))
+#if HAL_MOUNT_ALEXMOS_ENABLED
+#include <AP_HAL/AP_HAL.h>
+#include <AP_Param/AP_Param.h>
+#include <AP_Math/AP_Math.h>
 
 class AP_Mount_Alexmos : public AP_Mount_Backend
 {
 public:
     //constructor
-    AP_Mount_Alexmos(AP_Mount &frontend, AP_Mount::mount_state &state, uint8_t instance):
-        AP_Mount_Backend(frontend, state, instance),
-        _port(NULL),
-        _initialised(false),
-        _board_version(0),
-        _current_firmware_version(0.0f),
-        _firmware_beta_version(0),
-        _gimbal_3axis(false),
-        _gimbal_bat_monitoring(false),
-        _current_angle(0,0,0),
-        _param_read_once(false),
-        _checksum(0),
-        _step(0),
-        _command_id(0),
-        _payload_length(0),
-        _payload_counter(0),
-        _last_command_confirmed(false)
-    {}
+    using AP_Mount_Backend::AP_Mount_Backend;
 
     // init - performs any required initialisation for this instance
-    virtual void init(const AP_SerialManager& serial_manager);
+    void init() override;
 
     // update mount position - should be called periodically
-    virtual void update();
+    void update() override;
 
-    // has_pan_control - returns true if this mount can control it's pan (required for multicopters)
-    virtual bool has_pan_control() const;
+    // has_pan_control - returns true if this mount can control its pan (required for multicopters)
+    bool has_pan_control() const override;
 
-    // set_mode - sets mount's mode
-    virtual void set_mode(enum MAV_MOUNT_MODE mode) ;
+protected:
 
-    // status_msg - called to allow mounts to send their status to GCS via MAVLink
-    virtual void status_msg(mavlink_channel_t chan) ;
+    // get attitude as a quaternion.  returns true on success
+    bool get_attitude_quaternion(Quaternion& att_quat) override;
 
 private:
 
@@ -115,8 +41,8 @@ private:
     // get_boardinfo - get board version and firmware version
     void get_boardinfo();
 
-    // control_axis - send new angles to the gimbal at a fixed speed of 30 deg/s
-    void control_axis(const Vector3f& angle , bool targets_in_degrees);
+    // send new angles to the gimbal at a fixed speed of 30 deg/s
+    void control_axis(const MountTarget& angle_target_rad);
 
     // read_params - read current profile profile_id and global parameters from the gimbal settings
     void read_params(uint8_t profile_id);
@@ -124,7 +50,7 @@ private:
     // write_params - write new parameters to the gimbal settings
     void write_params();
 
-    bool get_realtimedata( Vector3f& angle);
+    bool get_realtimedata(Vector3f& angle);
 
     // Alexmos Serial Protocol reading part implementation
     // send_command - send a command to the Alemox Serial API
@@ -228,7 +154,7 @@ private:
         uint8_t rc_map_cmd;
         uint8_t rc_map_fc_roll;
         uint8_t rc_map_fc_pitch;
-	
+
         uint8_t rc_mix_fc_roll;
         uint8_t rc_mix_fc_pitch;
 
@@ -286,38 +212,37 @@ private:
 
     };
     union PACKED alexmos_parameters {
+        DEFINE_BYTE_ARRAY_METHODS
         alexmos_version version;
         alexmos_angles angles;
         alexmos_params params;
         alexmos_angles_speed angle_speed;
-        uint8_t bytes[];
     } _buffer,_current_parameters;
 
     AP_HAL::UARTDriver *_port;
-    bool _initialised;
+    bool _initialised : 1;
 
     // result of the get_boardinfo
     uint8_t _board_version;
     float _current_firmware_version;
     uint8_t _firmware_beta_version;
-    bool _gimbal_3axis ;
-    bool _gimbal_bat_monitoring ;
+    bool _gimbal_3axis : 1;
+    bool _gimbal_bat_monitoring : 1;
 
     // keep the last _current_angle values
     Vector3f _current_angle;
 
     // CMD_READ_PARAMS has been called once
-    bool _param_read_once;
+    bool _param_read_once : 1;
 
     // Serial Protocol Variables
-    uint8_t _checksum ;
-    uint8_t _step ;
+    uint8_t _checksum;
+    uint8_t _step;
     uint8_t _command_id;
     uint8_t _payload_length;
     uint8_t _payload_counter;
 
     // confirmed that last command was ok
-    bool _last_command_confirmed;
+    bool _last_command_confirmed : 1;
 };
-
-#endif
+#endif // HAL_MOUNT_ALEXMOS_ENABLED

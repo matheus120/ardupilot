@@ -1,31 +1,31 @@
 
 #include "UARTDriver.h"
+#include <AP_Common/ExpandingString.h>
 
-using namespace Empty;
+Empty::UARTDriver::UARTDriver() {}
 
-EmptyUARTDriver::EmptyUARTDriver() {}
+/* Empty implementations of virtual methods */
+void Empty::UARTDriver::_begin(uint32_t b, uint16_t rxS, uint16_t txS) {}
+void Empty::UARTDriver::_end() {}
+void Empty::UARTDriver::_flush() {}
+bool Empty::UARTDriver::is_initialized() { return false; }
+bool Empty::UARTDriver::tx_pending() { return false; }
 
-void EmptyUARTDriver::begin(uint32_t b) {}
-void EmptyUARTDriver::begin(uint32_t b, uint16_t rxS, uint16_t txS) {}
-void EmptyUARTDriver::end() {}
-void EmptyUARTDriver::flush() {}
-bool EmptyUARTDriver::is_initialized() { return false; }
-void EmptyUARTDriver::set_blocking_writes(bool blocking) {}
-bool EmptyUARTDriver::tx_pending() { return false; }
-
-/* Empty implementations of Stream virtual methods */
-int16_t EmptyUARTDriver::available() { return 0; }
-int16_t EmptyUARTDriver::txspace() { return 1; }
-int16_t EmptyUARTDriver::read() { return -1; }
-
-/* Empty implementations of Print virtual methods */
-size_t EmptyUARTDriver::write(uint8_t c) { return 0; }
-
-size_t EmptyUARTDriver::write(const uint8_t *buffer, size_t size)
+uint32_t Empty::UARTDriver::_available() { return 0; }
+uint32_t Empty::UARTDriver::txspace() { return 1; }
+bool Empty::UARTDriver::_discard_input() { return false; }
+size_t Empty::UARTDriver::_write(const uint8_t *buffer, size_t size)
 {
-    size_t n = 0;
-    while (size--) {
-        n += write(*buffer++);
-    }
-    return n;
+    return size;
 }
+ssize_t Empty::UARTDriver::_read(uint8_t *buffer, uint16_t size)
+{
+    return 0;
+}
+
+#if HAL_UART_STATS_ENABLED
+void Empty::UARTDriver::uart_info(ExpandingString &str, StatsTracker &stats, const uint32_t dt_ms)
+{
+    str.printf("EMPTY\n");
+}
+#endif

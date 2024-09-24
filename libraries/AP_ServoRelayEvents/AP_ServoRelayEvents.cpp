@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,18 +16,44 @@
  *   AP_ServoRelayEvents - handle servo and relay MAVLink events
  */
 
+#include "AP_ServoRelayEvents_config.h"
 
-#include <AP_HAL.h>
-#include <AP_Common.h>
-#include <AP_ServoRelayEvents.h>
-#include <RC_Channel.h>
+#if AP_SERVORELAYEVENTS_ENABLED
+
+#include <AP_HAL/AP_HAL.h>
+#include <AP_Common/AP_Common.h>
+#include "AP_ServoRelayEvents.h"
+#include <RC_Channel/RC_Channel.h>
+#include <SRV_Channel/SRV_Channel.h>
+#include <GCS_MAVLink/GCS.h>
 
 extern const AP_HAL::HAL& hal;
 
 bool AP_ServoRelayEvents::do_set_servo(uint8_t _channel, uint16_t pwm)
 {
-    if (!(mask & 1U<<(_channel-1))) {
-        // not allowed
+    SRV_Channel *c = SRV_Channels::srv_channel(_channel-1);
+    if (c == nullptr) {
+        return false;
+    }
+    switch(c->get_function())
+    {
+    case SRV_Channel::k_none:
+    case SRV_Channel::k_manual:
+    case SRV_Channel::k_sprayer_pump:
+    case SRV_Channel::k_sprayer_spinner:
+    case SRV_Channel::k_gripper:
+    case SRV_Channel::k_rcin1 ... SRV_Channel::k_rcin16: // rc pass-thru
+        break;
+    case SRV_Channel::k_rcin1_mapped ... SRV_Channel::k_rcin16_mapped: {
+        // mapped channels are set up with a -/+ 4500 angle range by
+        // SRV_Channel::aux_servo_function_setup
+        int16_t angle_scaled = constrain_uint16(pwm, 1000, 2000);
+        angle_scaled = (angle_scaled - 1500) * 9; // 1000 ... 2000 -> -500 ... 500 -> -4500 ... 4500
+        pwm = c->pwm_from_scaled_value(angle_scaled);
+        break;
+    }
+    default:
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "ServoRelayEvent: Channel %d is already in use", _channel);
         return false;
     }
     if (type == EVENT_TYPE_SERVO && 
@@ -36,14 +61,20 @@ bool AP_ServoRelayEvents::do_set_servo(uint8_t _channel, uint16_t pwm)
         // cancel previous repeat
         repeat = 0;
     }
-    hal.rcout->enable_ch(_channel-1);
-    hal.rcout->write(_channel-1, pwm);
+    c->set_output_pwm(pwm);
+    c->ignore_small_rcin_changes();
     return true;
 }
 
+#if AP_RELAY_ENABLED
 bool AP_ServoRelayEvents::do_set_relay(uint8_t relay_num, uint8_t state)
 {
-    if (!relay.enabled(relay_num)) {
+    AP_Relay *relay = AP::relay();
+    if (relay == nullptr) {
+        return false;
+    }
+
+    if (!relay->enabled(relay_num)) {
         return false;
     }
     if (type == EVENT_TYPE_RELAY && 
@@ -52,20 +83,42 @@ bool AP_ServoRelayEvents::do_set_relay(uint8_t relay_num, uint8_t state)
         repeat = 0;
     }
     if (state == 1) {
-        relay.on(relay_num);
+        relay->on(relay_num);
     } else if (state == 0) {
-        relay.off(relay_num);
+        relay->off(relay_num);
     } else {
-        relay.toggle(relay_num);
+        relay->toggle(relay_num);
     }
     return true;
 }
+#endif
 
 bool AP_ServoRelayEvents::do_repeat_servo(uint8_t _channel, uint16_t _servo_value, 
                                           int16_t _repeat, uint16_t _delay_ms)
 {
-    if (!(mask & 1U<<(_channel-1))) {
-        // not allowed
+    SRV_Channel *c = SRV_Channels::srv_channel(_channel-1);
+    if (c == nullptr) {
+        return false;
+    }
+    switch(c->get_function())
+    {
+    case SRV_Channel::k_none:
+    case SRV_Channel::k_manual:
+    case SRV_Channel::k_sprayer_pump:
+    case SRV_Channel::k_sprayer_spinner:
+    case SRV_Channel::k_gripper:
+    case SRV_Channel::k_rcin1 ... SRV_Channel::k_rcin16: // rc pass-thru
+        break;
+    case SRV_Channel::k_rcin1_mapped ... SRV_Channel::k_rcin16_mapped: {
+        // mapped channels are set up with a -/+ 4500 angle range by
+        // SRV_Channel::aux_servo_function_setup
+        int16_t angle_scaled = constrain_uint16(_servo_value, 1000, 2000);
+        angle_scaled = (angle_scaled - 1500) * 9; // 1000 ... 2000 -> -500 ... 500 -> -4500 ... 4500
+        _servo_value = c->pwm_from_scaled_value(angle_scaled);
+        break;
+    }
+    default:
+        GCS_SEND_TEXT(MAV_SEVERITY_INFO, "ServoRelayEvent: Channel %d is already in use", _channel);
         return false;
     }
     channel = _channel;
@@ -79,9 +132,14 @@ bool AP_ServoRelayEvents::do_repeat_servo(uint8_t _channel, uint16_t _servo_valu
     return true;
 }
 
+#if AP_RELAY_ENABLED
 bool AP_ServoRelayEvents::do_repeat_relay(uint8_t relay_num, int16_t _repeat, uint32_t _delay_ms)
 {
-    if (!relay.enabled(relay_num)) {
+    AP_Relay *relay = AP::relay();
+    if (relay == nullptr) {
+        return false;
+    }
+    if (!relay->enabled(relay_num)) {
         return false;
     }
     type = EVENT_TYPE_RELAY;
@@ -92,6 +150,7 @@ bool AP_ServoRelayEvents::do_repeat_relay(uint8_t relay_num, int16_t _repeat, ui
     update_events();
     return true;
 }
+#endif
 
 
 /*
@@ -99,27 +158,36 @@ bool AP_ServoRelayEvents::do_repeat_relay(uint8_t relay_num, int16_t _repeat, ui
 */
 void AP_ServoRelayEvents::update_events(void)
 {
-    if (repeat == 0 || (hal.scheduler->millis() - start_time_ms) < delay_ms) {
+    if (repeat == 0 || (AP_HAL::millis() - start_time_ms) < delay_ms) {
         return;
     }
 
-    start_time_ms = hal.scheduler->millis();
+    start_time_ms = AP_HAL::millis();
 
     switch (type) {
-    case EVENT_TYPE_SERVO:
-        hal.rcout->enable_ch(channel-1);
-        if (repeat & 1) {
-            hal.rcout->write(channel-1, RC_Channel::rc_channel(channel-1)->radio_trim);
-        } else {
-            hal.rcout->write(channel-1, servo_value);
+    case EVENT_TYPE_SERVO: {
+        SRV_Channel *c = SRV_Channels::srv_channel(channel-1);
+        if (c != nullptr) {
+            if (repeat & 1) {
+                c->set_output_pwm(c->get_trim());
+            } else {
+                c->set_output_pwm(servo_value);
+                c->ignore_small_rcin_changes();
+            }
         }
         break;
-        
-    case EVENT_TYPE_RELAY:
-        relay.toggle(channel);
+    }
+
+#if AP_RELAY_ENABLED
+    case EVENT_TYPE_RELAY: {
+        AP_Relay *relay = AP::relay();
+        if (relay != nullptr) {
+            relay->toggle(channel);
+        }
         break;
     }
-    
+#endif
+    }
     if (repeat > 0) {
         repeat--;
     } else {
@@ -127,3 +195,17 @@ void AP_ServoRelayEvents::update_events(void)
         repeat ^= 1;
     }
 }
+
+// singleton instance
+AP_ServoRelayEvents *AP_ServoRelayEvents::_singleton;
+
+namespace AP {
+
+AP_ServoRelayEvents *servorelayevents()
+{
+    return AP_ServoRelayEvents::get_singleton();
+}
+
+}
+
+#endif  // AP_SERVORELAYEVENTS_ENABLED

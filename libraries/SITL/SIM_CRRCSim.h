@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,26 +16,35 @@
   simulator connection for ardupilot version of CRRCSim
 */
 
-#ifndef _SIM_CRRCSIM_H
-#define _SIM_CRRCSIM_H
+#pragma once
+
+#include <AP_HAL/AP_HAL_Boards.h>
+
+#ifndef HAL_SIM_CRRCSIM_ENABLED
+#define HAL_SIM_CRRCSIM_ENABLED (CONFIG_HAL_BOARD == HAL_BOARD_SITL)
+#endif
+
+#if HAL_SIM_CRRCSIM_ENABLED
+
+#include <AP_HAL/utility/Socket_native.h>
 
 #include "SIM_Aircraft.h"
-#include <utility/Socket.h>
+
+namespace SITL {
 
 /*
   a CRRCSim simulator
  */
-class CRRCSim : public Aircraft
-{
+class CRRCSim : public Aircraft {
 public:
-    CRRCSim(const char *home_str, const char *frame_str);
+    CRRCSim(const char *frame_str);
 
     /* update model by one time step */
-    void update(const struct sitl_input &input);
+    void update(const struct sitl_input &input) override;
 
     /* static object creator */
-    static Aircraft *create(const char *home_str, const char *frame_str) {
-        return new CRRCSim(home_str, frame_str);
+    static Aircraft *create(const char *frame_str) {
+        return NEW_NOTHROW CRRCSim(frame_str);
     }
 
 private:
@@ -50,7 +58,7 @@ private:
         float yaw_rate;
         float col_pitch;
     };
-    
+
     /*
       reply packet sent from CRRCSim to ArduPilot
      */
@@ -73,8 +81,9 @@ private:
 
     bool heli_servos;
     double last_timestamp;
-    SocketAPM sock;
+    SocketAPM_native sock;
 };
 
+} // namespace SITL
 
-#endif // _SIM_CRRCSIM_H
+#endif  // HAL_SIM_CRRCSIM_ENABLED

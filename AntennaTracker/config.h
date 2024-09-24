@@ -1,21 +1,7 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 //
+#pragma once
+
 #include "defines.h"
-
-#include "APM_Config.h" // <== THIS INCLUDE, DO NOT EDIT IT. EVER.
-
-///
-/// DO NOT EDIT THIS INCLUDE - if you want to make a local change, make that
-/// change in your local copy of APM_Config.h.
-///
-
-// Just so that it's completely clear...
-#define ENABLED                 1
-#define DISABLED                0
-
-// this avoids a very common config error
-#define ENABLE ENABLED
-#define DISABLE DISABLED
 
 #ifndef MAV_SYSTEM_ID
  // use 2 for antenna tracker by default
@@ -40,8 +26,11 @@
 #ifndef YAW_RANGE_DEFAULT
  # define YAW_RANGE_DEFAULT 360
 #endif
-#ifndef PITCH_RANGE_DEFAULT
- # define PITCH_RANGE_DEFAULT 180
+#ifndef PITCH_MIN_DEFAULT
+ # define PITCH_MIN_DEFAULT -90
+#endif
+#ifndef PITCH_MAX_DEFAULT
+ # define PITCH_MAX_DEFAULT 90
 #endif
 
 //////////////////////////////////////////////////////////////////////////////
@@ -57,12 +46,22 @@
  # define DISTANCE_MIN_DEFAULT              5.0f    // do not track targets within 5 meters
 #endif
 
-//////////////////////////////////////////////////////////////////////////////
-// Developer Items
+//
+// Logging control
 //
 
-// use this to completely disable the CLI
-#ifndef CLI_ENABLED
- # define CLI_ENABLED ENABLED
+// Default logging bitmask
+#ifndef DEFAULT_LOG_BITMASK
+ # define DEFAULT_LOG_BITMASK \
+    MASK_LOG_ATTITUDE | \
+    MASK_LOG_GPS | \
+    MASK_LOG_RCIN | \
+    MASK_LOG_IMU | \
+    MASK_LOG_RCOUT | \
+    MASK_LOG_COMPASS | \
+    MASK_LOG_CURRENT
 #endif
 
+#ifndef AP_TRACKER_SET_HOME_VIA_MISSION_UPLOAD_ENABLED
+#define AP_TRACKER_SET_HOME_VIA_MISSION_UPLOAD_ENABLED 1
+#endif

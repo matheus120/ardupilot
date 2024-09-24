@@ -1,15 +1,12 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 /// @file	PID.h
 /// @brief	Generic PID algorithm, with EEPROM-backed storage of constants.
+#pragma once
 
-#ifndef __PID_H__
-#define __PID_H__
-
-#include <AP_Common.h>
-#include <AP_Param.h>
+#include <AP_Common/AP_Common.h>
+#include <AP_Param/AP_Param.h>
+#include <AC_PID/AC_PID.h>  // for AP_PIDInfo
 #include <stdlib.h>
-#include <math.h>               // for fabs()
+#include <cmath>
 
 /// @class	PID
 /// @brief	Object managing one PID control
@@ -19,13 +16,13 @@ public:
     PID(const float &   initial_p = 0.0f,
         const float &   initial_i = 0.0f,
         const float &   initial_d = 0.0f,
-        const int16_t & initial_imax = 0)
+        const int16_t & initial_imax = 0):
+            default_kp(initial_p),
+            default_ki(initial_i),
+            default_kd(initial_d),
+            default_kimax(initial_imax)
     {
 		AP_Param::setup_object_defaults(this, var_info);
-        _kp = initial_p;
-        _ki = initial_i;
-        _kd = initial_d;
-        _imax = initial_imax;
 
 		// set _last_derivative as invalid when we startup
 		_last_derivative = NAN;
@@ -42,8 +39,9 @@ public:
     ///
     float        get_pid(float error, float scaler = 1.0);
 
-	// get_pid() constrained to +/- 4500
-    int16_t     get_pid_4500(float error, float scaler = 1.0);
+    /// Reset the whole PID state
+    //
+    void        reset();
 
     /// Reset the PID integrator
     ///
@@ -65,7 +63,7 @@ public:
                              const float    i,
                              const float    d,
                              const int16_t  imaxval) {
-        _kp = p; _ki = i; _kd = d; _imax = imaxval;
+        _kp.set(p); _ki.set(i); _kd.set(d); _imax.set(imaxval);
     }
 
     float        kP() const {
@@ -100,6 +98,8 @@ public:
 
     static const struct AP_Param::GroupInfo        var_info[];
 
+    const AP_PIDInfo& get_pid_info(void) const { return _pid_info; }
+
 private:
     AP_Float        _kp;
     AP_Float        _ki;
@@ -113,12 +113,17 @@ private:
 
     float           _get_pid(float error, uint16_t dt, float scaler);
 
+    AP_PIDInfo _pid_info {};
+
     /// Low pass filter cut frequency for derivative calculation.
     ///
-    /// 20 Hz becasue anything over that is probably noise, see
+    /// 20 Hz because anything over that is probably noise, see
     /// http://en.wikipedia.org/wiki/Low-pass_filter.
     ///
     static const uint8_t        _fCut = 20;
-};
 
-#endif
+    const float default_kp;
+    const float default_ki;
+    const float default_kd;
+    const float default_kimax;
+};

@@ -1,4 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,18 +16,20 @@
   simulator connector for ardupilot version of CRRCSim
 */
 
-#include <AP_HAL.h>
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 #include "SIM_CRRCSim.h"
+
+#if HAL_SIM_CRRCSIM_ENABLED
+
 #include <stdio.h>
+
+#include <AP_HAL/AP_HAL.h>
 
 extern const AP_HAL::HAL& hal;
 
-/*
-  constructor
- */
-CRRCSim::CRRCSim(const char *home_str, const char *frame_str) :
-    Aircraft(home_str, frame_str),
+namespace SITL {
+
+CRRCSim::CRRCSim(const char *frame_str) :
+    Aircraft(frame_str),
     last_timestamp(0),
     sock(true)
 {
@@ -39,7 +40,7 @@ CRRCSim::CRRCSim(const char *home_str, const char *frame_str) :
 
     sock.reuseaddress();
     sock.set_blocking(false);
-    heli_servos = (strstr(frame_str,"heli") != NULL);
+    heli_servos = (strstr(frame_str,"heli") != nullptr);
 }
 
 /*
@@ -57,7 +58,7 @@ void CRRCSim::send_servos_heli(const struct sitl_input &input)
     float roll_rate = (swash1 - swash2)/2;
     float pitch_rate = -((swash1 + swash2)/2.0 - swash3)/2;
     float yaw_rate = -(tail_rotor - 0.5);
-    
+
     servo_packet pkt;
     pkt.roll_rate  = constrain_float(roll_rate, -0.5, 0.5);
     pkt.pitch_rate = constrain_float(pitch_rate, -0.5, 0.5);
@@ -120,16 +121,13 @@ void CRRCSim::recv_fdm(const struct sitl_input &input)
     gyro = Vector3f(pkt.rollRate, pkt.pitchRate, pkt.yawRate);
     velocity_ef = Vector3f(pkt.speedN, pkt.speedE, pkt.speedD);
 
-    Location loc1, loc2;
-    loc2.lat = pkt.latitude * 1.0e7;
-    loc2.lng = pkt.longitude * 1.0e7;
-    memset(&loc1, 0, sizeof(loc1));
-    Vector2f posdelta = location_diff(loc1, loc2);
-    position.x = posdelta.x;
-    position.y = posdelta.y;
+    origin.lat = pkt.latitude * 1.0e7;
+    origin.lng = pkt.longitude * 1.0e7;
+    position.xy().zero();
     position.z = -pkt.altitude;
 
     airspeed = pkt.airspeed;
+    airspeed_pitot = pkt.airspeed;
 
     dcm.from_euler(pkt.roll, pkt.pitch, pkt.yaw);
 
@@ -151,5 +149,12 @@ void CRRCSim::update(const struct sitl_input &input)
     send_servos(input);
     recv_fdm(input);
     update_position();
+    time_advance();
+
+    // update magnetic field
+    update_mag_field_bf();
 }
-#endif // CONFIG_HAL_BOARD
+
+} // namespace SITL
+
+#endif  // HAL_SIM_CRRCSIM_ENABLED

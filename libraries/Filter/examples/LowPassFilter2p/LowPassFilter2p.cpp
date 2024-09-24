@@ -3,22 +3,16 @@
  *       Code by Randy Mackay and Andrew Tridgell
  */
 
-#include <AP_Common.h>
-#include <AP_Progmem.h>
-#include <AP_HAL.h>
-#include <AP_HAL_AVR.h>
-#include <AP_HAL_PX4.h>
-#include <AP_HAL_FLYMAPLE.h>
-#include <AP_Param.h>
-#include <StorageManager.h>
-#include <AP_Math.h>            // ArduPilot Mega Vector/Matrix math Library
-#include <Filter.h>                     // Filter library
-#include <LowPassFilter2p.h>
+#include <AP_HAL/AP_HAL.h>
+#include <Filter/Filter.h>                     // Filter library
+#include <Filter/LowPassFilter2p.h>
 
-const AP_HAL::HAL& hal = AP_HAL_BOARD_DRIVER;
+void loop();
+
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 // craete an instance with 800Hz sample rate and 30Hz cutoff
-static LowPassFilter2pfloat low_pass_filter(800, 30);
+static LowPassFilter2pFloat low_pass_filter(800, 30);
 
 // setup routine
 static void setup()
@@ -29,23 +23,15 @@ static void setup()
 
 void loop()
 {
-    int16_t i;
-    float new_value;
-    float filtered_value;
-
-    for( i=0; i<300; i++ ) {
+    for(int16_t i = 0; i < 300; i++ ) {
 
         // new data value
-        new_value = sinf((float)i*2*PI*5/50.0f);  // 5hz
+        const float new_value = 17 + sinf((float)i * 2 * M_PI * 5 / 50.0f);  // 5hz
+        // apply new value and retrieved filtered result
+        const float filtered_value = low_pass_filter.apply(new_value);
 
         // output to user
-        hal.console->printf("applying: %6.4f", new_value);
-
-        // apply new value and retrieved filtered result
-        filtered_value = low_pass_filter.apply(new_value);
-
-        // display results
-        hal.console->printf("\toutput: %6.4f\n", filtered_value);
+        hal.console->printf("applying: %6.4f -> %6.4f\n", (double)new_value, filtered_value);
 
         hal.scheduler->delay(10);
     }

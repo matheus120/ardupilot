@@ -1,4 +1,3 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
   MAVLink SERIAL_CONTROL handling
  */
@@ -18,22 +17,26 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "GCS_config.h"
 
-#include <AP_HAL.h>
-#include <GCS.h>
-#include <DataFlash.h>
+#if AP_MAVLINK_MSG_SERIAL_CONTROL_ENABLED
+
+#include <AP_HAL/AP_HAL.h>
+#include "GCS.h"
+#include <AP_GPS/AP_GPS.h>
 
 extern const AP_HAL::HAL& hal;
 
 /**
    handle a SERIAL_CONTROL message
  */
-void GCS_MAVLINK::handle_serial_control(mavlink_message_t *msg, AP_GPS &gps)
+void GCS_MAVLINK::handle_serial_control(const mavlink_message_t &msg)
 {
     mavlink_serial_control_t packet;
-    mavlink_msg_serial_control_decode(msg, &packet);
+    mavlink_msg_serial_control_decode(&msg, &packet);
 
-    AP_HAL::UARTDriver *port = NULL;
+    AP_HAL::UARTDriver *port = nullptr;
+    AP_HAL::BetterStream *stream = nullptr;
 
     if (packet.flags & SERIAL_CONTROL_FLAG_REPLY) {
         // how did this packet get to us?
@@ -43,28 +46,63 @@ void GCS_MAVLINK::handle_serial_control(mavlink_message_t *msg, AP_GPS &gps)
     bool exclusive = (packet.flags & SERIAL_CONTROL_FLAG_EXCLUSIVE) != 0;
 
     switch (packet.device) {
-    case SERIAL_CONTROL_DEV_TELEM1:
-        port = hal.uartC;
-        lock_channel(MAVLINK_COMM_1, exclusive);
+    case SERIAL_CONTROL_DEV_TELEM1: {
+        GCS_MAVLINK *link = gcs().chan(1);
+        if (link == nullptr) {
+            break;
+        }
+        stream = port = link->get_uart();
+        link->lock(exclusive);
         break;
-    case SERIAL_CONTROL_DEV_TELEM2:
-        port = hal.uartD;
-        lock_channel(MAVLINK_COMM_2, exclusive);
+    }
+    case SERIAL_CONTROL_DEV_TELEM2: {
+        GCS_MAVLINK *link = gcs().chan(2);
+        if (link == nullptr) {
+            break;
+        }
+        stream = port = link->get_uart();
+        link->lock(exclusive);
         break;
+    }
+#if AP_GPS_ENABLED
     case SERIAL_CONTROL_DEV_GPS1:
-        port = hal.uartB;
-        gps.lock_port(0, exclusive);
+        stream = port = hal.serial(3);
+        AP::gps().lock_port(0, exclusive);
         break;
     case SERIAL_CONTROL_DEV_GPS2:
-        port = hal.uartE;
-        gps.lock_port(1, exclusive);
+        stream = port = hal.serial(4);
+        AP::gps().lock_port(1, exclusive);
         break;
+#endif  // AP_GPS_ENABLED
+    case SERIAL_CONTROL_SERIAL0 ... SERIAL_CONTROL_SERIAL9: {
+        // direct access to a SERIALn port
+        stream = port = AP::serialmanager().get_serial_by_id(packet.device - SERIAL_CONTROL_SERIAL0);
+
+        // see if we need to lock mavlink
+        for (uint8_t i=0; i<gcs().num_gcs(); i++) {
+            GCS_MAVLINK *link = gcs().chan(i);
+            if (link == nullptr || link->get_uart() != port) {
+                continue;
+            }
+            link->lock(exclusive);
+            break;
+        }
+        break;
+    }
+
     default:
         // not supported yet
         return;
     }
-    
-    if (exclusive) {
+    if (stream == nullptr) {
+        // this is probably very bad
+#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+        AP_HAL::panic("stream is nullptr");
+#endif
+        return;
+    }
+
+    if (exclusive && port != nullptr) {
         // force flow control off for exclusive access. This protocol
         // is used to talk to bootloaders which may not have flow
         // control support
@@ -72,26 +110,26 @@ void GCS_MAVLINK::handle_serial_control(mavlink_message_t *msg, AP_GPS &gps)
     }
 
     // optionally change the baudrate
-    if (packet.baudrate != 0) {
+    if (packet.baudrate != 0 && port != nullptr) {
         port->begin(packet.baudrate);
     }
 
     // write the data
     if (packet.count != 0) {
         if ((packet.flags & SERIAL_CONTROL_FLAG_BLOCKING) == 0) {
-            port->write(packet.data, packet.count);
+            stream->write(packet.data, packet.count);
         } else {
             const uint8_t *data = &packet.data[0];
             uint8_t count = packet.count;
             while (count > 0) {
-                while (port->txspace() <= 0) {
+                while (stream->txspace() <= 0) {
                     hal.scheduler->delay(5);
                 }
-                uint16_t n = port->txspace();
+                uint16_t n = stream->txspace();
                 if (n > packet.count) {
                     n = packet.count;
                 }
-                port->write(data, n);                
+                stream->write(data, n);                
                 data += n;
                 count -= n;
             }
@@ -108,7 +146,7 @@ void GCS_MAVLINK::handle_serial_control(mavlink_message_t *msg, AP_GPS &gps)
 more_data:
     // sleep for the timeout
     while (packet.timeout != 0 && 
-           port->available() < (int16_t)sizeof(packet.data)) {
+           stream->available() < (int16_t)sizeof(packet.data)) {
         hal.scheduler->delay(1);
         packet.timeout--;
     }
@@ -116,19 +154,33 @@ more_data:
     packet.flags = SERIAL_CONTROL_FLAG_REPLY;
 
     // work out how many bytes are available
-    int16_t available = port->available();
+    int16_t available = stream->available();
     if (available < 0) {
         available = 0;
     }
     if (available > (int16_t)sizeof(packet.data)) {
         available = sizeof(packet.data);
     }
+    if (available == 0 && (flags & SERIAL_CONTROL_FLAG_BLOCKING) == 0) {
+        return;
+    }
+
+    if (packet.flags & SERIAL_CONTROL_FLAG_BLOCKING) {
+        while (!HAVE_PAYLOAD_SPACE(chan, SERIAL_CONTROL)) {
+            hal.scheduler->delay(1);
+        }
+    } else {
+        if (!HAVE_PAYLOAD_SPACE(chan, SERIAL_CONTROL)) {
+            // no space for reply
+            return;
+        }
+    }
 
     // read any reply data
     packet.count = 0;
     memset(packet.data, 0, sizeof(packet.data));
     while (available > 0) {
-        packet.data[packet.count++] = (uint8_t)port->read();
+        packet.data[packet.count++] = (uint8_t)stream->read();
         available--;
     }
 
@@ -136,10 +188,15 @@ more_data:
     _mav_finalize_message_chan_send(chan, 
                                     MAVLINK_MSG_ID_SERIAL_CONTROL,
                                     (const char *)&packet,
+                                    MAVLINK_MSG_ID_SERIAL_CONTROL_MIN_LEN,
                                     MAVLINK_MSG_ID_SERIAL_CONTROL_LEN,
                                     MAVLINK_MSG_ID_SERIAL_CONTROL_CRC);
     if ((flags & SERIAL_CONTROL_FLAG_MULTI) && packet.count != 0) {
-        hal.scheduler->delay(1);
+        if (flags & SERIAL_CONTROL_FLAG_BLOCKING) {
+            hal.scheduler->delay(1);
+        }
         goto more_data;
     }
 }
+
+#endif  // AP_MAVLINK_MSG_SERIAL_CONTROL_ENABLED

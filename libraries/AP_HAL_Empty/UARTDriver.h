@@ -1,29 +1,29 @@
+#pragma once
 
-#ifndef __AP_HAL_EMPTY_UARTDRIVER_H__
-#define __AP_HAL_EMPTY_UARTDRIVER_H__
+#include "AP_HAL_Empty.h"
 
-#include <AP_HAL_Empty.h>
-
-class Empty::EmptyUARTDriver : public AP_HAL::UARTDriver {
+class Empty::UARTDriver : public AP_HAL::UARTDriver {
 public:
-    EmptyUARTDriver();
+    UARTDriver();
     /* Empty implementations of UARTDriver virtual methods */
-    void begin(uint32_t b);
-    void begin(uint32_t b, uint16_t rxS, uint16_t txS);
-    void end();
-    void flush();
-    bool is_initialized();
-    void set_blocking_writes(bool blocking);
-    bool tx_pending();
+    bool is_initialized() override;
+    bool tx_pending() override;
 
     /* Empty implementations of Stream virtual methods */
-    int16_t available();
-    int16_t txspace();
-    int16_t read();
+    uint32_t txspace() override;
 
-    /* Empty implementations of Print virtual methods */
-    size_t write(uint8_t c);
-    size_t write(const uint8_t *buffer, size_t size);
+
+#if HAL_UART_STATS_ENABLED
+    // request information on uart I/O for one uart
+    void uart_info(ExpandingString &str, StatsTracker &stats, const uint32_t dt_ms) override;
+#endif
+
+protected:
+    void _begin(uint32_t b, uint16_t rxS, uint16_t txS) override;
+    size_t _write(const uint8_t *buffer, size_t size) override;
+    ssize_t _read(uint8_t *buffer, uint16_t size) override WARN_IF_UNUSED;
+    void _end() override;
+    void _flush() override;
+    uint32_t _available() override;
+    bool _discard_input() override;
 };
-
-#endif // __AP_HAL_EMPTY_UARTDRIVER_H__

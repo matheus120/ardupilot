@@ -1,98 +1,74 @@
-// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 //
 // Simple test for the AP_AHRS interface
 //
 
-#include <AP_HAL.h>
-#include <AP_Common.h>
-#include <AP_Progmem.h>
-#include <AP_Math.h>
-#include <AP_Param.h>
-#include <AP_InertialSensor.h>
-#include <AP_ADC.h>
-#include <AP_ADC_AnalogSource.h>
-#include <AP_Baro.h>            // ArduPilot Mega Barometer Library
-#include <AP_GPS.h>
-#include <AP_AHRS.h>
-#include <AP_Compass.h>
-#include <AP_Declination.h>
-#include <AP_Airspeed.h>
-#include <AP_Baro.h>
-#include <GCS_MAVLink.h>
-#include <AP_Mission.h>
-#include <StorageManager.h>
-#include <AP_Terrain.h>
-#include <Filter.h>
-#include <SITL.h>
-#include <AP_Buffer.h>
-#include <AP_Notify.h>
-#include <AP_Vehicle.h>
-#include <DataFlash.h>
-#include <AP_NavEKF.h>
-#include <AP_Rally.h>
-#include <AP_Scheduler.h>
+#include <AP_AHRS/AP_AHRS.h>
+#include <AP_HAL/AP_HAL.h>
+#include <AP_BoardConfig/AP_BoardConfig.h>
+#include <GCS_MAVLink/GCS_Dummy.h>
+#include <AP_RangeFinder/AP_RangeFinder.h>
+#include <AP_Logger/AP_Logger.h>
+#include <AP_GPS/AP_GPS.h>
+#include <AP_Baro/AP_Baro.h>
+#include <AP_ExternalAHRS/AP_ExternalAHRS.h>
+#include <AP_Vehicle/AP_Vehicle.h>
 
-#include <AP_HAL_AVR.h>
-#include <AP_HAL_SITL.h>
-#include <AP_HAL_Empty.h>
-#include <AP_HAL_PX4.h>
-#include <AP_BattMonitor.h>
-#include <AP_SerialManager.h>
-#include <RC_Channel.h>
-#include <AP_RangeFinder.h>
+void setup();
+void loop();
 
-const AP_HAL::HAL& hal = AP_HAL_BOARD_DRIVER;
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
-// INS and Baro declaration
-AP_InertialSensor ins;
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_APM1
-AP_ADC_ADS7844 apm1_adc;
-#endif
+static AP_SerialManager serial_manager;
 
-Compass compass;
+class DummyVehicle : public AP_Vehicle {
+public:
+    AP_AHRS ahrs{AP_AHRS::FLAG_ALWAYS_USE_EKF};
+    bool set_mode(const uint8_t new_mode, const ModeReason reason) override { return true; };
+    uint8_t get_mode() const override { return 1; };
+    void get_scheduler_tasks(const AP_Scheduler::Task *&tasks, uint8_t &task_count, uint32_t &log_bit) override {};
+    void init_ardupilot() override {};
+    void load_parameters() override {};
+    void init() {
+        BoardConfig.init();
+        ins.init(100);
+        ahrs.init();
+    }
+    AP_Int32 unused_log_bitmask;
+    struct LogStructure log_structure[1] = {
+    };
+    const AP_Int32 &get_log_bitmask() override { return unused_log_bitmask; }
 
-AP_GPS gps;
-AP_Baro baro;
-AP_SerialManager serial_manager;
+    const struct LogStructure *get_log_structures() const override {
+        return log_structure;
+    }
+    uint8_t get_num_log_structures() const override {
+        return 0;
+    }
+};
+
+static DummyVehicle vehicle;
 
 // choose which AHRS system to use
-AP_AHRS_DCM  ahrs(ins, baro, gps);
-
-
-
-#define HIGH 1
-#define LOW 0
+// AP_AHRS_DCM ahrs = AP_AHRS_DCM::create(barometer, gps);
+auto &ahrs = vehicle.ahrs;
 
 void setup(void)
 {
-
-#ifdef APM2_HARDWARE
-    // we need to stop the barometer from holding the SPI bus
-    hal.gpio->pinMode(40, HAL_HAL_GPIO_OUTPUT);
-    hal.gpio->write(40, HIGH);
-#endif
-
-    ins.init(AP_InertialSensor::COLD_START, 
-			 AP_InertialSensor::RATE_100HZ);
-    ahrs.init();
+    vehicle.init();
     serial_manager.init();
-
-    if( compass.init() ) {
-        hal.console->printf("Enabling compass\n");
-        ahrs.set_compass(&compass);
-    } else {
+    AP::compass().init();
+    if (!AP::compass().read()) {
         hal.console->printf("No compass detected\n");
     }
-    gps.init(NULL, serial_manager);
+    AP::gps().init();
 }
 
 void loop(void)
 {
     static uint16_t counter;
     static uint32_t last_t, last_print, last_compass;
-    uint32_t now = hal.scheduler->micros();
+    uint32_t now = AP_HAL::micros();
     float heading = 0;
 
     if (last_t == 0) {
@@ -101,14 +77,11 @@ void loop(void)
     }
     last_t = now;
 
-    if (now - last_compass > 100*1000UL &&
-        compass.read()) {
-        heading = compass.calculate_heading(ahrs.get_dcm_matrix());
+    if (now - last_compass > 100 * 1000UL &&
+        AP::compass().read()) {
+        heading = AP::compass().calculate_heading(ahrs.get_rotation_body_to_ned());
         // read compass at 10Hz
         last_compass = now;
-#if WITH_GPS
-        g_gps->update();
-#endif
     }
 
     ahrs.update();
@@ -116,20 +89,25 @@ void loop(void)
 
     if (now - last_print >= 100000 /* 100ms : 10hz */) {
         Vector3f drift  = ahrs.get_gyro_drift();
-        hal.console->printf_P(
-                PSTR("r:%4.1f  p:%4.1f y:%4.1f "
-                    "drift=(%5.1f %5.1f %5.1f) hdg=%.1f rate=%.1f\n"),
-                        ToDeg(ahrs.roll),
-                        ToDeg(ahrs.pitch),
-                        ToDeg(ahrs.yaw),
-                        ToDeg(drift.x),
-                        ToDeg(drift.y),
-                        ToDeg(drift.z),
-                        compass.use_for_yaw() ? ToDeg(heading) : 0.0f,
-                        (1.0e6f*counter)/(now-last_print));
+        hal.console->printf(
+                "r:%4.1f  p:%4.1f y:%4.1f "
+                    "drift=(%5.1f %5.1f %5.1f) hdg=%.1f rate=%.1f\n",
+                (double)ToDeg(ahrs.get_roll()),
+                (double)ToDeg(ahrs.get_pitch()),
+                (double)ToDeg(ahrs.get_yaw()),
+                (double)ToDeg(drift.x),
+                (double)ToDeg(drift.y),
+                (double)ToDeg(drift.z),
+                (double)(AP::compass().use_for_yaw() ? ToDeg(heading) : 0.0f),
+                (double)((1.0e6f * counter) / (now-last_print)));
         last_print = now;
         counter = 0;
     }
 }
+
+const struct AP_Param::GroupInfo        GCS_MAVLINK_Parameters::var_info[] = {
+    AP_GROUPEND
+};
+GCS_Dummy _gcs;
 
 AP_HAL_MAIN();

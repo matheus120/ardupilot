@@ -1,5 +1,3 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-
 /*
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -15,47 +13,25 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __EXTERNALLED_H__
-#define __EXTERNALLED_H__
+#pragma once
 
-#include <AP_Common.h>
-#include <AP_HAL.h>
-#include <AP_Param.h>
+#include "AP_Notify_config.h"
+
+#if AP_NOTIFY_EXTERNALLED_ENABLED
+
 #include "NotifyDevice.h"
-
-#if CONFIG_HAL_BOARD == HAL_BOARD_APM2
- #define EXTERNAL_LED_ARMED   61    // Armed LED - AN7
- #define EXTERNAL_LED_GPS     60    // GPS LED - AN6
- #define EXTERNAL_LED_MOTOR1  58    // Motor1 LED - AN4
- #define EXTERNAL_LED_MOTOR2  62    // Motor2 LED - AN8
-#elif CONFIG_HAL_BOARD == HAL_BOARD_APM1
- #define EXTERNAL_LED_GPS     64    // GPS LED - AN10
- #define EXTERNAL_LED_ARMED   65    // Armed LED - AN11
- #define EXTERNAL_LED_MOTOR1  62    // Motor1 LED - AN8
- #define EXTERNAL_LED_MOTOR2  66    // Motor2 LED - AN12
-#elif CONFIG_HAL_BOARD == HAL_BOARD_VRBRAIN
- #define EXTERNAL_LED_GPS     28    // GPS LED - AN10
- #define EXTERNAL_LED_ARMED   29    // Armed LED - AN11
- #define EXTERNAL_LED_MOTOR1  30    // Motor1 LED - AN8
- #define EXTERNAL_LED_MOTOR2  31    // Motor2 LED - AN12
-#else
- #define EXTERNAL_LED_GPS     0     // pin definitions to allow this lib to build for
- #define EXTERNAL_LED_ARMED   0     // for other boards besides APM1, APM2 even though
- #define EXTERNAL_LED_MOTOR1  0     // they will never be used
- #define EXTERNAL_LED_MOTOR2  0
-#endif
 
 class ExternalLED: public NotifyDevice
 {
 public:
     // constructor
-    ExternalLED() : _counter(0), _counter2(0), _pattern(NONE), _pattern_counter(0) {}
+    ExternalLED() : _pattern(NONE) {}
 
     // initialise the LED driver
-    bool init(void);
-    
+    bool init(void) override;
+
     // should be called at 50Hz
-    void update(void);
+    void update(void) override;
 
 private:
 
@@ -93,4 +69,4 @@ private:
     void motor_led2(bool on_off);
 };
 
-#endif // __EXTERNALLED_H__
+#endif  // AP_NOTIFY_EXTERNALLED_ENABLED

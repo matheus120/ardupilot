@@ -1,47 +1,31 @@
 /*
   simple test of RC output interface
+  Attention: If your board has safety switch,
+  don't forget to push it to enable the PWM output.
  */
-#include <AP_HAL.h>
-#include <AP_HAL_AVR.h>
-#include <AP_HAL_SITL.h>
-#include <AP_HAL_PX4.h>
-#include <AP_HAL_Linux.h>
-#include <AP_HAL_Empty.h>
-#include <AP_Common.h>
-#include <AP_Baro.h>
-#include <AP_ADC.h>
-#include <AP_GPS.h>
-#include <AP_InertialSensor.h>
-#include <AP_Notify.h>
-#include <DataFlash.h>
-#include <GCS_MAVLink.h>
-#include <AP_Mission.h>
-#include <StorageManager.h>
-#include <AP_Terrain.h>
-#include <AP_Compass.h>
-#include <AP_Declination.h>
-#include <SITL.h>
-#include <Filter.h>
-#include <AP_Param.h>
-#include <AP_Progmem.h>
-#include <AP_Math.h>
-#include <AP_AHRS.h>
-#include <AP_Airspeed.h>
-#include <AP_Vehicle.h>
-#include <AP_ADC_AnalogSource.h>
-#include <AP_NavEKF.h>
-#include <AP_Rally.h>
-#include <AP_Scheduler.h>
-#include <UARTDriver.h>
-#include <AP_BattMonitor.h>
-#include <AP_RangeFinder.h>
 
-const AP_HAL::HAL& hal = AP_HAL_BOARD_DRIVER;
+#include <AP_HAL/AP_HAL.h>
 
-void setup (void) 
+// we need a boardconfig created so that the io processor's enable
+// parameter is available
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+#include <AP_BoardConfig/AP_BoardConfig.h>
+#include <AP_IOMCU/AP_IOMCU.h>
+AP_BoardConfig BoardConfig;
+#endif
+
+void setup();
+void loop();
+
+const AP_HAL::HAL& hal = AP_HAL::get_HAL();
+
+void setup (void)
 {
-    hal.console->println("Starting AP_HAL::RCOutput test");
-    for (uint8_t i=0; i<14; i++) {
+    hal.console->printf("Starting AP_HAL::RCOutput test\n");
+#if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
+    BoardConfig.init();
+#endif
+    for (uint8_t i = 0; i< 14; i++) {
         hal.rcout->enable_ch(i);
     }
 }
@@ -49,18 +33,17 @@ void setup (void)
 static uint16_t pwm = 1500;
 static int8_t delta = 1;
 
-void loop (void) 
+void loop (void)
 {
-    uint8_t i;
-    for (i=0; i<14; i++) {
+    for (uint8_t i=0; i < 14; i++) {
         hal.rcout->write(i, pwm);
         pwm += delta;
         if (delta > 0 && pwm >= 2000) {
             delta = -1;
-            hal.console->printf("reversing\n");
+            hal.console->printf("decreasing\n");
         } else if (delta < 0 && pwm <= 1000) {
             delta = 1;
-            hal.console->printf("reversing\n");
+            hal.console->printf("increasing\n");
         }
     }
     hal.scheduler->delay(5);

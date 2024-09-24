@@ -1,95 +1,167 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
+#pragma once
 
-#ifndef __AP_HAL_SITL_UART_DRIVER_H__
-#define __AP_HAL_SITL_UART_DRIVER_H__
-#include <AP_HAL.h>
+#include <AP_HAL/AP_HAL.h>
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
 
 #include <stdint.h>
 #include <stdarg.h>
 #include "AP_HAL_SITL_Namespace.h"
+#include <AP_HAL/utility/Socket_native.h>
+#include <AP_HAL/utility/RingBuffer.h>
+#include <AP_CSVReader/AP_CSVReader.h>
+#include <AP_HAL/utility/DataRateLimit.h>
 
-class HALSITL::SITLUARTDriver : public AP_HAL::UARTDriver {
+#include <SITL/SIM_SerialDevice.h>
+
+class HALSITL::UARTDriver : public AP_HAL::UARTDriver {
 public:
     friend class HALSITL::SITL_State;
 
-    SITLUARTDriver(const uint8_t portNumber, SITL_State *sitlState) {
+    UARTDriver(const uint8_t portNumber, SITL_State *sitlState) {
         _portNumber = portNumber;
-        _rxSpace = _default_rx_buffer_size;
-        _txSpace = _default_tx_buffer_size;
         _sitlState = sitlState;
 
         _fd = -1;
+        _mc_fd = -1;
         _listen_fd = -1;
     }
 
-    /* Implementations of UARTDriver virtual methods */
-    void begin(uint32_t b) {
-        begin(b, 0, 0);
-    }
-    void begin(uint32_t b, uint16_t rxS, uint16_t txS);
-    void end();
-    void flush();
-    bool is_initialized() {
+    bool is_initialized() override {
         return true;
     }
 
-    void set_blocking_writes(bool blocking)
-    {
-        _nonblocking_writes = !blocking;
-    }
+    ssize_t get_system_outqueue_length() const;
 
-    bool tx_pending() {
+    bool tx_pending() override {
         return false;
     }
 
     /* Implementations of Stream virtual methods */
-    int16_t available();
-    int16_t txspace();
-    int16_t read();
+    uint32_t txspace() override;
 
-    /* Implementations of Print virtual methods */
-    size_t write(uint8_t c);
-    size_t write(const uint8_t *buffer, size_t size);
+    bool _unbuffered_writes;
 
-    // file descriptor, exposed so SITL_State::loop_hook() can use it
-    int _fd;
+    enum flow_control get_flow_control(void) override { return FLOW_CONTROL_ENABLE; }
+
+    void configure_parity(uint8_t v) override;
+    void set_stop_bits(int n) override;
+    bool set_unbuffered_writes(bool on) override;
+
+    uint32_t bw_in_bytes_per_second() const override;
+
+    void _timer_tick(void) override;
+
+    /*
+      return timestamp estimate in microseconds for when the start of
+      a nbytes packet arrived on the uart. This should be treated as a
+      time constraint, not an exact time. It is guaranteed that the
+      packet did not start being received after this time, but it
+      could have been in a system buffer before the returned time.
+
+      This takes account of the baudrate of the link. For transports
+      that have no baudrate (such as USB) the time estimate may be
+      less accurate.
+
+      A return value of zero means the HAL does not support this API
+     */
+    uint64_t receive_time_constraint_us(uint16_t nbytes) override;
+
+    uint32_t get_baud_rate() const override { return _uart_baudrate; }
+
+#if HAL_UART_STATS_ENABLED
+    // request information on uart I/O
+    void uart_info(ExpandingString &str, StatsTracker &stats, const uint32_t dt_ms) override;
+#endif
 
 private:
+
+    int _fd;
+
+    // file descriptor for reading multicast packets
+    int _mc_fd;
+
     uint8_t _portNumber;
-    bool _connected; // true if a client has connected
+    bool _connected = false; // true if a client has connected
+    bool _use_send_recv = false;
     int _listen_fd;  // socket we are listening on
     int _serial_port;
     static bool _console;
-    bool _nonblocking_writes;
-    uint16_t _rxSpace;
-    uint16_t _txSpace;
+    ByteBuffer _readbuffer{16384};
+    ByteBuffer _writebuffer{16384};
 
-    // IPv4 address of target for uartC
-    const char *_tcp_client_addr;
+    // default multicast IP and port
+    const char *mcast_ip_default = "239.255.145.50";
+    const uint16_t mcast_port_default = 14550;
 
-    void _tcp_start_connection(bool wait_for_connection);
-    void _tcp_start_client(const char *address);
+    const char *_uart_path;
+    uint32_t _uart_baudrate;
+
+    void _tcp_start_connection(uint16_t port, bool wait_for_connection);
+    void _uart_start_connection(void);
+    void _check_reconnect();
+    void _tcp_start_client(const char *address, uint16_t port);
+    void _udp_start_client(const char *address, uint16_t port);
+    void _udp_start_multicast(const char *address, uint16_t port);
     void _check_connection(void);
     static bool _select_check(int );
     static void _set_nonblocking(int );
-
-    /// default receive buffer size
-    static const uint16_t _default_rx_buffer_size = 128;
-
-    /// default transmit buffer size
-    static const uint16_t _default_tx_buffer_size = 16;
-
-    /// maxium tx/rx buffer size
-    /// @note if we could bring the max size down to 256, the mask and head/tail
-    ///       pointers in the buffer could become uint8_t.
-    ///
-    static const uint16_t _max_buffer_size = 512;
+    bool set_speed(int speed) const;
 
     SITL_State *_sitlState;
+    uint64_t _receive_timestamp;
+    bool _is_udp;
+    bool _packetise;
+    uint16_t _mc_myport;
+
+    // for baud-rate limiting:
+    struct {
+        DataRateLimit write;
+        DataRateLimit read;
+    } baud_limits;
+
+    HAL_Semaphore write_mtx;
+
+    SITL::SerialDevice *_sim_serial_device;
+
+    struct {
+        bool active;
+        uint8_t term[20];
+        AP_CSVReader csvreader{term, sizeof(term), ','};
+        struct {
+            uint32_t timestamp_us;
+            uint8_t b;  // the byte
+        } loaded_data;
+        bool loaded;  // true if data is all valid
+        bool done_first_line = false;
+        uint8_t terms_seen;
+        uint32_t first_timestamp_us;
+        uint32_t first_emit_micros_us;
+    } logic_async_csv;
+    uint16_t read_from_async_csv(uint8_t *buffer, uint16_t space);
+
+protected:
+    void _begin(uint32_t b, uint16_t rxS, uint16_t txS) override;
+    size_t _write(const uint8_t *buffer, size_t size) override;
+    ssize_t _read(uint8_t *buffer, uint16_t count) override;
+    uint32_t _available() override;
+    void _end() override;
+    void _flush() override;
+    bool _discard_input() override;
+
+#if HAL_UART_STATS_ENABLED
+    // Getters for cumulative tx and rx counts
+    uint32_t get_total_tx_bytes() const override { return _tx_stats_bytes; }
+    uint32_t get_total_rx_bytes() const override { return _rx_stats_bytes; }
+#endif
+
+private:
+    void handle_writing_from_writebuffer_to_device();
+    void handle_reading_from_device_to_readbuffer();
+
+    // statistics
+    uint32_t _tx_stats_bytes;
+    uint32_t _rx_stats_bytes;
 
 };
 
 #endif
-#endif // __AP_HAL_SITL_UART_DRIVER_H__
-

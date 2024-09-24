@@ -1,120 +1,89 @@
-#include <AP_HAL.h>
-
-#if CONFIG_HAL_BOARD == HAL_BOARD_LINUX
-#include <stdio.h>
-#include <sys/time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <stdint.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#include <AP_HAL/AP_HAL.h>
+#include <AP_HAL/utility/dsm.h>
+#include <AP_HAL/utility/sumd.h>
+#include <AP_HAL/utility/st24.h>
+#include <AP_HAL/utility/srxl.h>
+#include <AP_RCProtocol/AP_RCProtocol_SBUS.h>
 
 #include "RCInput.h"
-#include "sbus.h"
-#include "dsm.h"
+
+#define MIN_NUM_CHANNELS 5
 
 extern const AP_HAL::HAL& hal;
 
 using namespace Linux;
 
-LinuxRCInput::LinuxRCInput() :
-    new_rc_input(false)
+RCInput::RCInput()
 {
     ppm_state._channel_counter = -1;
 }
 
-void LinuxRCInput::init(void* machtnichts)
+void RCInput::init()
 {
 }
 
-bool LinuxRCInput::new_input() 
+bool RCInput::new_input()
 {
-    return new_rc_input;
+    bool ret = rc_input_count != last_rc_input_count;
+    if (ret) {
+        last_rc_input_count.store(rc_input_count);
+    }
+    return ret;
 }
 
-uint8_t LinuxRCInput::num_channels() 
+uint8_t RCInput::num_channels()
 {
     return _num_channels;
 }
 
-uint16_t LinuxRCInput::read(uint8_t ch) 
+void RCInput::set_num_channels(uint8_t num)
 {
-    new_rc_input = false;
-    if (_override[ch]) {
-        return _override[ch];
-    }
+    _num_channels = num;
+}
+
+uint16_t RCInput::read(uint8_t ch)
+{
     if (ch >= _num_channels) {
         return 0;
     }
     return _pwm_values[ch];
 }
 
-uint8_t LinuxRCInput::read(uint16_t* periods, uint8_t len) 
+uint8_t RCInput::read(uint16_t* periods, uint8_t len)
 {
     uint8_t i;
     for (i=0; i<len; i++) {
-        if((periods[i] = read(i))){
-            continue;
-        }
-        else{
-            break;
-        }
+        periods[i] = read(i);
     }
-    return (i+1);
+    return len;
 }
-
-bool LinuxRCInput::set_overrides(int16_t *overrides, uint8_t len) 
-{
-    bool res = false;
-    if(len > LINUX_RC_INPUT_NUM_CHANNELS){
-        len = LINUX_RC_INPUT_NUM_CHANNELS;
-    }
-    for (uint8_t i = 0; i < len; i++) {
-        res |= set_override(i, overrides[i]);
-    }
-    return res;
-}
-
-bool LinuxRCInput::set_override(uint8_t channel, int16_t override) 
-{
-    if (override < 0) return false; /* -1: no change. */
-    if (channel < LINUX_RC_INPUT_NUM_CHANNELS) {
-        _override[channel] = override;
-        if (override != 0) {
-            new_rc_input = true;
-            return true;
-        }
-    }
-    return false;
-}
-
-void LinuxRCInput::clear_overrides()
-{
-    for (uint8_t i = 0; i < LINUX_RC_INPUT_NUM_CHANNELS; i++) {
-       _override[i] = 0;
-    }
-}
-
 
 /*
   process a PPM-sum pulse of the given width
  */
-void LinuxRCInput::_process_ppmsum_pulse(uint16_t width_usec)
+void RCInput::_process_ppmsum_pulse(uint16_t width_usec)
 {
     if (width_usec >= 2700) {
         // a long pulse indicates the end of a frame. Reset the
         // channel counter so next pulse is channel 0
-        if (ppm_state._channel_counter >= 5) {
+        if (ppm_state._channel_counter >= MIN_NUM_CHANNELS) {
             for (uint8_t i=0; i<ppm_state._channel_counter; i++) {
                 _pwm_values[i] = ppm_state._pulse_capt[i];
             }
             _num_channels = ppm_state._channel_counter;
-            new_rc_input = true;
+            rc_input_count++;
         }
         ppm_state._channel_counter = 0;
         return;
@@ -145,7 +114,7 @@ void LinuxRCInput::_process_ppmsum_pulse(uint16_t width_usec)
             _pwm_values[i] = ppm_state._pulse_capt[i];
         }
         _num_channels = ppm_state._channel_counter;
-        new_rc_input = true;
+        rc_input_count++;
         ppm_state._channel_counter = -1;
     }
 }
@@ -153,7 +122,7 @@ void LinuxRCInput::_process_ppmsum_pulse(uint16_t width_usec)
 /*
   process a SBUS input pulse of the given width
  */
-void LinuxRCInput::_process_sbus_pulse(uint16_t width_s0, uint16_t width_s1)
+void RCInput::_process_sbus_pulse(uint16_t width_s0, uint16_t width_s1)
 {
     // convert to bit widths, allowing for up to 1usec error, assuming 100000 bps
     uint16_t bits_s0 = (width_s0+1) / 10;
@@ -167,7 +136,7 @@ void LinuxRCInput::_process_sbus_pulse(uint16_t width_s0, uint16_t width_s1)
         // invalid data
         goto reset;
     }
-	
+
     if (bits_s0+bit_ofs > 10) {
         // invalid data as last two bits must be stop bits
         goto reset;
@@ -213,16 +182,18 @@ void LinuxRCInput::_process_sbus_pulse(uint16_t width_s0, uint16_t width_s1)
         }
         uint16_t values[LINUX_RC_INPUT_NUM_CHANNELS];
         uint16_t num_values=0;
-        bool sbus_failsafe=false, sbus_frame_drop=false;
-        if (sbus_decode(bytes, values, &num_values, 
-                        &sbus_failsafe, &sbus_frame_drop, 
-                        LINUX_RC_INPUT_NUM_CHANNELS) && 
-            num_values >= 5) {
+        bool sbus_failsafe=false;
+        if (AP_RCProtocol_SBUS::sbus_decode(bytes, values, &num_values,
+                                            sbus_failsafe,
+                                            LINUX_RC_INPUT_NUM_CHANNELS) &&
+            num_values >= MIN_NUM_CHANNELS) {
             for (i=0; i<num_values; i++) {
                 _pwm_values[i] = values[i];
             }
             _num_channels = num_values;
-            new_rc_input = true;
+            if (!sbus_failsafe) {
+                rc_input_count++;
+            }
         }
         goto reset;
     } else if (bits_s1 > 12) {
@@ -231,10 +202,10 @@ void LinuxRCInput::_process_sbus_pulse(uint16_t width_s0, uint16_t width_s1)
     }
     return;
 reset:
-    memset(&sbus_state, 0, sizeof(sbus_state));        
+    memset(&sbus_state, 0, sizeof(sbus_state));
 }
 
-void LinuxRCInput::_process_dsm_pulse(uint16_t width_s0, uint16_t width_s1)
+void RCInput::_process_dsm_pulse(uint16_t width_s0, uint16_t width_s1)
 {
     // convert to bit widths, allowing for up to 1usec error, assuming 115200 bps
     uint16_t bits_s0 = ((width_s0+4)*(uint32_t)115200) / 1000000;
@@ -249,7 +220,7 @@ void LinuxRCInput::_process_dsm_pulse(uint16_t width_s0, uint16_t width_s1)
 
     byte_ofs = dsm_state.bit_ofs/10;
     bit_ofs = dsm_state.bit_ofs%10;
-    
+
     if(byte_ofs > 15) {
         // invalid data
         goto reset;
@@ -272,7 +243,7 @@ void LinuxRCInput::_process_dsm_pulse(uint16_t width_s0, uint16_t width_s1)
             for (i=0; i<16; i++) {
                 // get raw data
                 uint16_t v = dsm_state.bytes[i];
-                
+
                 // check start bit
                 if ((v & 1) != 0) {
                     goto reset;
@@ -285,13 +256,13 @@ void LinuxRCInput::_process_dsm_pulse(uint16_t width_s0, uint16_t width_s1)
             }
             uint16_t values[8];
             uint16_t num_values=0;
-            if (dsm_decode(hal.scheduler->micros64(), bytes, values, &num_values, 8) && 
-                num_values >= 5) {
+            if (dsm_decode(AP_HAL::micros64(), bytes, values, &num_values, 8) &&
+                num_values >= MIN_NUM_CHANNELS) {
                 for (i=0; i<num_values; i++) {
                     _pwm_values[i] = values[i];
                 }
-                _num_channels = num_values;                
-                new_rc_input = true;
+                _num_channels = num_values;
+                rc_input_count++;
             }
         }
         memset(&dsm_state, 0, sizeof(dsm_state));
@@ -309,18 +280,26 @@ void LinuxRCInput::_process_dsm_pulse(uint16_t width_s0, uint16_t width_s1)
     dsm_state.bit_ofs += bits_s1;
     return;
 reset:
-    memset(&dsm_state, 0, sizeof(dsm_state));        
+    memset(&dsm_state, 0, sizeof(dsm_state));
+}
+
+void RCInput::_process_pwm_pulse(uint16_t channel, uint16_t width_s0, uint16_t width_s1)
+{
+    if (channel < _num_channels) {
+        _pwm_values[channel] = width_s1; // range: 700usec ~ 2300usec
+        rc_input_count++;
+    }
 }
 
 /*
   process a RC input pulse of the given width
  */
-void LinuxRCInput::_process_rc_pulse(uint16_t width_s0, uint16_t width_s1)
+void RCInput::_process_rc_pulse(uint16_t width_s0, uint16_t width_s1)
 {
 #if 0
     // useful for debugging
     static FILE *rclog;
-    if (rclog == NULL) {
+    if (rclog == nullptr) {
         rclog = fopen("/tmp/rcin.log", "w");
     }
     if (rclog) {
@@ -337,4 +316,17 @@ void LinuxRCInput::_process_rc_pulse(uint16_t width_s0, uint16_t width_s1)
     _process_dsm_pulse(width_s0, width_s1);
 }
 
-#endif // CONFIG_HAL_BOARD
+/*
+ * Update channel values directly
+ */
+void RCInput::_update_periods(uint16_t *periods, uint8_t len)
+{
+    if (len > LINUX_RC_INPUT_NUM_CHANNELS) {
+        len = LINUX_RC_INPUT_NUM_CHANNELS;
+    }
+    for (unsigned int i=0; i < len; i++) {
+        _pwm_values[i] = periods[i];
+    }
+    _num_channels = len;
+    rc_input_count++;
+}

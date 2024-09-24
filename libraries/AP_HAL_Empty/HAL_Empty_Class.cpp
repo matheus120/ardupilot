@@ -1,55 +1,80 @@
 
-#include <AP_HAL.h>
+#include <AP_HAL/AP_HAL.h>
 #if CONFIG_HAL_BOARD == HAL_BOARD_EMPTY
+
+#include <assert.h>
 
 #include "HAL_Empty_Class.h"
 #include "AP_HAL_Empty_Private.h"
 
 using namespace Empty;
 
-static EmptyUARTDriver uartADriver;
-static EmptyUARTDriver uartBDriver;
-static EmptyUARTDriver uartCDriver;
-static EmptySemaphore  i2cSemaphore;
-static EmptyI2CDriver  i2cDriver(&i2cSemaphore);
-static EmptySPIDeviceManager spiDeviceManager;
-static EmptyAnalogIn analogIn;
-static EmptyStorage storageDriver;
-static EmptyGPIO gpioDriver;
-static EmptyRCInput rcinDriver;
-static EmptyRCOutput rcoutDriver;
-static EmptyScheduler schedulerInstance;
-static EmptyUtil utilInstance;
+static UARTDriver serial0Driver;
+static UARTDriver serial1Driver;
+static UARTDriver serial2Driver;
+static UARTDriver serial3Driver;
+static SPIDeviceManager spiDeviceManager;
+static AnalogIn analogIn;
+static Storage storageDriver;
+static GPIO gpioDriver;
+static RCInput rcinDriver;
+static RCOutput rcoutDriver;
+static Scheduler schedulerInstance;
+static Util utilInstance;
+static OpticalFlow opticalFlowDriver;
+static Flash flashDriver;
 
 HAL_Empty::HAL_Empty() :
     AP_HAL::HAL(
-        &uartADriver,
-        &uartBDriver,
-        &uartCDriver,
-        NULL,            /* no uartD */
-        NULL,            /* no uartE */
-        &i2cDriver,
+        &serial0Driver,
+        &serial1Driver,
+        &serial2Driver,
+        &serial3Driver,
+        nullptr,            /* no SERIAL4 */
+        nullptr,            /* no SERIAL5 */
+        nullptr,            /* no SERIAL6 */
+        nullptr,            /* no SERIAL7 */
+        nullptr,            /* no SERIAL8 */
+        nullptr,            /* no SERIAL9 */
         &spiDeviceManager,
         &analogIn,
         &storageDriver,
-        &uartADriver,
+        &serial0Driver,
         &gpioDriver,
         &rcinDriver,
         &rcoutDriver,
         &schedulerInstance,
-        &utilInstance),
-    _member(new EmptyPrivateMember(123))
+        &utilInstance,
+        &opticalFlowDriver,
+        &flashDriver,
+        nullptr)            /* no DSP */
 {}
 
-void HAL_Empty::init(int argc,char* const argv[]) const {
+void HAL_Empty::run(int argc, char* const argv[], Callbacks* callbacks) const
+{
     /* initialize all drivers and private members here.
      * up to the programmer to do this in the correct order.
      * Scheduler should likely come first. */
-    scheduler->init(NULL);
-    uartA->begin(115200);
+    scheduler->init();
+    serial(0)->begin(115200);
     _member->init();
+
+    callbacks->setup();
+    scheduler->set_system_initialized();
+
+    for (;;) {
+        callbacks->loop();
+    }
 }
 
-const HAL_Empty AP_HAL_Empty;
+static HAL_Empty hal_empty;
+
+const AP_HAL::HAL& AP_HAL::get_HAL() {
+    return hal_empty;
+}
+
+AP_HAL::HAL& AP_HAL::get_HAL_mutable() {
+    return hal_empty;
+}
 
 #endif

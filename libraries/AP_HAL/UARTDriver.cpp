@@ -1,65 +1,226 @@
-// -*- Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
 /*
-   This program is free software: you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published by
-   the Free Software Foundation, either version 3 of the License, or
-   (at your option) any later version.
-
-   This program is distributed in the hope that it will be useful,
-   but WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-   GNU General Public License for more details.
-
-   You should have received a copy of the GNU General Public License
-   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  implement generic UARTDriver code, including port locking
  */
+#include "AP_HAL.h"
+#include <AP_Logger/AP_Logger.h>
 
-#include <AP_HAL.h>
+void AP_HAL::UARTDriver::begin(uint32_t baud, uint16_t rxSpace, uint16_t txSpace)
+{
+    if (lock_write_key != 0) {
+        // silently fail
+        return;
+    }
+    return _begin(baud, rxSpace, txSpace);
+}
 
-#include "utility/print_vprintf.h"
-#include "UARTDriver.h"
+void AP_HAL::UARTDriver::begin(uint32_t baud)
+{
+    return begin(baud, 0, 0);
+}
 
-/* 
-   BetterStream method implementations
-   These are implemented in AP_HAL to ensure consistent behaviour on
-   all boards, although they can be overridden by a port
+/*
+  lock the uart for exclusive use by write_locked() and read_locked() with the right key
  */
-
-void AP_HAL::UARTDriver::print_P(const prog_char_t *s) 
+bool AP_HAL::UARTDriver::lock_port(uint32_t write_key, uint32_t read_key)
 {
-    char    c;
-    while ('\0' != (c = pgm_read_byte((const prog_char *)s++)))
-        write(c);
+    if (lock_write_key != 0 && write_key != lock_write_key && write_key != 0) {
+        // someone else is using it
+        return false;
+    }
+    if (lock_read_key != 0 && read_key != lock_read_key && read_key != 0) {
+        // someone else is using it
+        return false;
+    }
+    lock_write_key = write_key;
+    lock_read_key = read_key;
+    return true;
 }
 
-void AP_HAL::UARTDriver::println_P(const prog_char_t *s) 
+void AP_HAL::UARTDriver::begin_locked(uint32_t baud, uint16_t rxSpace, uint16_t txSpace, uint32_t key)
 {
-    print_P(s);
-    println();
+    if (lock_write_key != 0 && key != lock_write_key) {
+        // silently fail
+        return;
+    }
+    return _begin(baud, rxSpace, txSpace);
 }
 
-void AP_HAL::UARTDriver::printf(const char *fmt, ...) 
+/*
+   write to a locked port. If port is locked and key is not correct then 0 is returned
+   and write is discarded. All writes are non-blocking
+*/
+size_t AP_HAL::UARTDriver::write_locked(const uint8_t *buffer, size_t size, uint32_t key)
 {
-    va_list ap;
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
+    if (lock_write_key != 0 && key != lock_write_key) {
+        return 0;
+    }
+    return _write(buffer, size);
 }
 
-void AP_HAL::UARTDriver::vprintf(const char *fmt, va_list ap) 
+/*
+   read from a locked port. If port is locked and key is not correct then -1 is returned
+*/
+ssize_t AP_HAL::UARTDriver::read_locked(uint8_t *buf, size_t count, uint32_t key)
 {
-    print_vprintf((AP_HAL::Print*)this, 0, fmt, ap);
+    if (lock_read_key != 0 && key != lock_read_key) {
+        return 0;
+    }
+    ssize_t ret = _read(buf, count);
+#if AP_UART_MONITOR_ENABLED
+    auto monitor = _monitor_read_buffer;
+    if (monitor != nullptr && ret > 0) {
+        monitor->write(buf, ret);
+    }
+#endif
+    return ret;
 }
 
-void AP_HAL::UARTDriver::_printf_P(const prog_char *fmt, ...) 
+uint32_t AP_HAL::UARTDriver::available_locked(uint32_t key)
 {
-    va_list ap;
-    va_start(ap, fmt);
-    vprintf_P(fmt, ap);
-    va_end(ap);
+    if (lock_read_key != 0 && lock_read_key != key) {
+        return 0;
+    }
+    return _available();
 }
 
-void AP_HAL::UARTDriver::vprintf_P(const prog_char *fmt, va_list ap) 
+size_t AP_HAL::UARTDriver::write(const uint8_t *buffer, size_t size)
 {
-    print_vprintf((AP_HAL::Print*)this, 1, fmt, ap);
+    if (lock_write_key != 0) {
+        return 0;
+    }
+    return _write(buffer, size);
 }
+
+size_t AP_HAL::UARTDriver::write(uint8_t c)
+{
+    return write(&c, 1);
+}
+
+size_t AP_HAL::UARTDriver::write(const char *str)
+{
+    return write((const uint8_t *)str, strlen(str));
+}
+
+ssize_t AP_HAL::UARTDriver::read(uint8_t *buffer, uint16_t count)
+{
+    return read_locked(buffer, count, 0);
+}
+
+bool AP_HAL::UARTDriver::read(uint8_t &b)
+{
+    ssize_t n = read(&b, 1);
+    return n > 0;
+}
+
+int16_t AP_HAL::UARTDriver::read(void)
+{
+    uint8_t b;
+    if (!read(b)) {
+        return -1;
+    }
+    return b;
+}
+
+
+uint32_t AP_HAL::UARTDriver::available()
+{
+    if (lock_read_key != 0) {
+        return 0;
+    }
+    return _available();
+}
+
+void AP_HAL::UARTDriver::end()
+{
+    if (lock_read_key != 0 || lock_write_key != 0) {
+        return;
+    }
+    _end();
+}
+
+void AP_HAL::UARTDriver::flush()
+{
+    if (lock_read_key != 0 || lock_write_key != 0) {
+        return;
+    }
+    _flush();
+}
+
+bool AP_HAL::UARTDriver::discard_input()
+{
+    if (lock_read_key != 0) {
+        return false;
+    }
+    return _discard_input();
+}
+
+/*
+  default implementation of receive_time_constraint_us() will be used
+  for subclasses that don't implement the call (eg. network
+  sockets). Best we can do is to use the current timestamp as we don't
+  know the transport delay
+ */
+uint64_t AP_HAL::UARTDriver::receive_time_constraint_us(uint16_t nbytes)
+{
+    return AP_HAL::micros64();
+}
+
+// Helper to check if flow control is enabled given the passed setting
+bool AP_HAL::UARTDriver::flow_control_enabled(enum flow_control flow_control_setting) const
+{
+    switch(flow_control_setting) {
+        case FLOW_CONTROL_ENABLE:
+        case FLOW_CONTROL_AUTO:
+            return true;
+        case FLOW_CONTROL_DISABLE:
+        case FLOW_CONTROL_RTS_DE:
+            break;
+    }
+    return false;
+}
+
+uint8_t AP_HAL::UARTDriver::get_parity(void)
+{
+    return AP_HAL::UARTDriver::parity;
+}
+
+#if HAL_UART_STATS_ENABLED
+// Take cumulative bytes and return the change since last call
+uint32_t AP_HAL::UARTDriver::StatsTracker::ByteTracker::update(uint32_t bytes)
+{
+    const uint32_t change = bytes - last_bytes;
+    last_bytes = bytes;
+    return change;
+}
+
+#if HAL_LOGGING_ENABLED
+// Write UART log message
+void AP_HAL::UARTDriver::log_stats(const uint8_t inst, StatsTracker &stats, const uint32_t dt_ms)
+{
+    // get totals
+    const uint32_t total_tx_bytes = get_total_tx_bytes();
+    const uint32_t total_rx_bytes = get_total_rx_bytes();
+
+    // Don't log if we have never seen data
+    if ((total_tx_bytes == 0) && (total_rx_bytes == 0)) {
+        // This could be wrong if we happen to wrap both tx and rx to zero at exactly the same time
+        // In that very unlikely case one log will be missed
+        return;
+    }
+
+    // Update tracking
+    const uint32_t tx_bytes = stats.tx.update(total_tx_bytes);
+    const uint32_t rx_bytes = stats.rx.update(total_rx_bytes);
+
+    // Assemble struct and log
+    struct log_UART pkt {
+        LOG_PACKET_HEADER_INIT(LOG_UART_MSG),
+        time_us  : AP_HAL::micros64(),
+        instance : inst,
+        tx_rate  : float((tx_bytes * 1000) / dt_ms),
+        rx_rate  : float((rx_bytes * 1000) / dt_ms),
+    };
+    AP::logger().WriteBlock(&pkt, sizeof(pkt));
+}
+#endif // HAL_LOGGING_ENABLED
+#endif // HAL_UART_STATS_ENABLED

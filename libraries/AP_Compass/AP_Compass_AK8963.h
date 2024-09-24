@@ -1,125 +1,150 @@
-/// -*- tab-width: 4; Mode: C++; c-basic-offset: 4; indent-tabs-mode: nil -*-
-#ifndef AP_Compass_AK8963_H
-#define AP_Compass_AK8963_H
+#pragma once
 
-#include <AP_HAL.h>
-#include "../AP_Common/AP_Common.h"
-#include "../AP_Math/AP_Math.h"
+#include "AP_Compass_config.h"
 
-#include "Compass.h"
+#if AP_COMPASS_AK8963_ENABLED
+
+#include <AP_Common/AP_Common.h>
+#include <AP_HAL/AP_HAL.h>
+#include <AP_HAL/I2CDevice.h>
+#include <AP_HAL/SPIDevice.h>
+#include <AP_Math/AP_Math.h>
+
+#include "AP_Compass.h"
 #include "AP_Compass_Backend.h"
 
-class AK8963_Backend
-{
-    public:
-        virtual ~AK8963_Backend() {}
-        virtual void read(uint8_t address, uint8_t *buf, uint32_t count) = 0;
-        virtual void write(uint8_t address, const uint8_t *buf, uint32_t count) = 0;
-        virtual bool sem_take_nonblocking() = 0;
-        virtual bool sem_take_blocking() = 0;
-        virtual bool sem_give() = 0;
-        virtual bool init() = 0;
-        virtual uint8_t read(uint8_t address) 
-        {
-            uint8_t value;
-            read(address, &value, 1);
-            return value;
-        }
-
-        virtual void write(uint8_t address, uint8_t value)
-        {
-            write(address, &value, 1);
-        }
-};
+class AuxiliaryBus;
+class AuxiliaryBusSlave;
+class AP_InertialSensor;
+class AP_AK8963_BusDriver;
 
 class AP_Compass_AK8963 : public AP_Compass_Backend
 {
 public:
-    AP_Compass_AK8963(Compass &compass);
+    /* Probe for AK8963 standalone on I2C bus */
+    static AP_Compass_Backend *probe(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev,
+                                     enum Rotation rotation);
 
-    bool        init(void);
-    void        read(void);
-    void        accumulate(void);
+    /* Probe for AK8963 on auxiliary bus of MPU9250, connected through I2C */
+    static AP_Compass_Backend *probe_mpu9250(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev,
+                                             enum Rotation rotation);
 
-protected:
-    AK8963_Backend      *_backend;  // Not to be confused with Compass (frontend) "_backends" attribute.
-    float               magnetometer_ASA[3];
-    float               _mag_x;
-    float               _mag_y;
-    float               _mag_z;
-    uint8_t             _compass_instance;
+    /* Probe for AK8963 on auxiliary bus of MPU9250, connected through SPI */
+    static AP_Compass_Backend *probe_mpu9250(uint8_t mpu9250_instance,
+                                             enum Rotation rotation);
 
-    virtual bool read_raw() = 0;
+    static constexpr const char *name = "AK8963";
+
+    virtual ~AP_Compass_AK8963();
+
+    void read() override;
+
+    /* Must be public so the BusDriver can access its definition */
+    struct PACKED sample_regs {
+        int16_t val[3];
+        uint8_t st2;
+    };
 
 private:
-    typedef enum 
-    {
-        STATE_CONVERSION,
-        STATE_SAMPLE,
-        STATE_ERROR
-    } state_t;
+    AP_Compass_AK8963(AP_AK8963_BusDriver *bus,
+                      enum Rotation rotation);
 
-    virtual bool        _backend_init() = 0;
-    virtual void        _register_read(uint8_t address, uint8_t count, uint8_t *value) = 0;
-    virtual void        _register_write(uint8_t address, uint8_t value) = 0;
-    virtual void        _backend_reset() = 0;
-    virtual uint8_t     _read_id() = 0;
-    virtual void        _dump_registers() {}
+    bool init();
+    void _make_factory_sensitivity_adjustment(Vector3f &field) const;
+    void _make_adc_sensitivity_adjustment(Vector3f &field) const;
 
-    bool                _register_read(uint8_t address, uint8_t *value);
-    bool                _calibrate();
-    bool                _self_test();
-    void                _update();
-    void                _start_conversion();
-    void                _collect_samples();
+    bool _reset();
+    bool _setup_mode();
+    bool _check_id();
+    bool _calibrate();
 
-    float               _mag_x_accum;
-    float               _mag_y_accum;
-    float               _mag_z_accum;
-    uint32_t            _accum_count;
+    void _update();
 
-    bool                _initialised;
-    state_t             _state;
-    uint8_t             _magnetometer_adc_resolution;
-    uint32_t            _last_update_timestamp;
-    uint32_t            _last_accum_time;
+    AP_AK8963_BusDriver *_bus;
+
+    float _magnetometer_ASA[3] {0, 0, 0};
+
+    uint8_t _compass_instance;
+    bool _initialized;
+    enum Rotation _rotation;
 };
 
-class AK8963_MPU9250_SPI_Backend: public AK8963_Backend
+class AP_AK8963_BusDriver
 {
-    public:
-        AK8963_MPU9250_SPI_Backend();
-        void read(uint8_t address, uint8_t *buf, uint32_t count);
-        void write(uint8_t address, const uint8_t *buf, uint32_t count);
-        bool sem_take_nonblocking();
-        bool sem_take_blocking();
-        bool sem_give();
-        bool init() ;
-        ~AK8963_MPU9250_SPI_Backend() {}
+public:
+    virtual ~AP_AK8963_BusDriver() { }
 
-    private:
-        AP_HAL::SPIDeviceDriver *_spi;
-        AP_HAL::Semaphore *_spi_sem;
+    virtual bool block_read(uint8_t reg, uint8_t *buf, uint32_t size) = 0;
+    virtual bool register_read(uint8_t reg, uint8_t *val) = 0;
+    virtual bool register_write(uint8_t reg, uint8_t val) = 0;
+
+    virtual AP_HAL::Semaphore  *get_semaphore() = 0;
+
+    virtual bool configure() { return true; }
+    virtual bool start_measurements() { return true; }
+    virtual AP_HAL::Device::PeriodicHandle register_periodic_callback(uint32_t, AP_HAL::Device::PeriodicCb) = 0;
+
+    // set device type within a device class
+    virtual void set_device_type(uint8_t devtype) = 0;
+
+    // return 24 bit bus identifier
+    virtual uint32_t get_bus_id(void) const = 0;
 };
 
-class AP_Compass_AK8963_MPU9250: public AP_Compass_AK8963
+class AP_AK8963_BusDriver_HALDevice: public AP_AK8963_BusDriver
 {
-    public:
-        AP_Compass_AK8963_MPU9250(Compass &compass);
-        ~AP_Compass_AK8963_MPU9250() {}
-        bool init();
+public:
+    AP_AK8963_BusDriver_HALDevice(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev);
 
-    // detect the sensor
-    static AP_Compass_Backend *detect(Compass &compass);
+    virtual bool block_read(uint8_t reg, uint8_t *buf, uint32_t size) override;
+    virtual bool register_read(uint8_t reg, uint8_t *val) override;
+    virtual bool register_write(uint8_t reg, uint8_t val) override;
 
-    private:
-        bool       _backend_init();
-        void       _backend_reset();
-        void       _register_read(uint8_t address, uint8_t count, uint8_t *value);
-        void       _register_write(uint8_t address, uint8_t value);
-        void       _dump_registers();
-        bool       read_raw();
-        uint8_t    _read_id();
+    virtual AP_HAL::Semaphore  *get_semaphore() override;
+    AP_HAL::Device::PeriodicHandle register_periodic_callback(uint32_t period_usec, AP_HAL::Device::PeriodicCb) override;
+
+    // set device type within a device class
+    void set_device_type(uint8_t devtype) override {
+        _dev->set_device_type(devtype);
+    }
+
+    // return 24 bit bus identifier
+    uint32_t get_bus_id(void) const override {
+        return _dev->get_bus_id();
+    }
+    
+private:
+    AP_HAL::OwnPtr<AP_HAL::I2CDevice> _dev;
 };
 
-#endif
+class AP_AK8963_BusDriver_Auxiliary : public AP_AK8963_BusDriver
+{
+public:
+    AP_AK8963_BusDriver_Auxiliary(AP_InertialSensor &ins, uint8_t backend_id,
+                                  uint8_t backend_instance, uint8_t addr);
+    ~AP_AK8963_BusDriver_Auxiliary();
+
+    bool block_read(uint8_t reg, uint8_t *buf, uint32_t size) override;
+    bool register_read(uint8_t reg, uint8_t *val) override;
+    bool register_write(uint8_t reg, uint8_t val) override;
+
+    AP_HAL::Device::PeriodicHandle register_periodic_callback(uint32_t period_usec, AP_HAL::Device::PeriodicCb) override;
+    
+    AP_HAL::Semaphore  *get_semaphore() override;
+
+    bool configure() override;
+    bool start_measurements() override;
+
+    // set device type within a device class
+    void set_device_type(uint8_t devtype) override;
+
+    // return 24 bit bus identifier
+    uint32_t get_bus_id(void) const override;
+    
+private:
+    AuxiliaryBus *_bus;
+    AuxiliaryBusSlave *_slave;
+    bool _started;
+};
+
+#endif  // AP_COMPASS_AK8963_ENABLED
